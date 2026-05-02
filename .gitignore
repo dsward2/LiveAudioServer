@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# Swift Package Manager
+/.build
+/Packages
+Package.resolved
+
+# Xcode
+xcuserdata/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# SwiftPM/Xcode generated
+/.swiftpm
+
+# Misc
+.netrc
+
+# Secrets / TLS material — never commit private keys or PKCS#12 bundles
+*.p12
+*.pfx
+*-key.pem
+*.key

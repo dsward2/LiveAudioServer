@@ -1,0 +1,802 @@
+# LiveAudioServer
+
+A zero-UI macOS command-line tool that reads **live 16-bit PCM audio from stdin or a UDP/TCP socket** and streams it simultaneously as **MP3** and **AAC/M4A** over HTTP — with no intermediate files, no third-party server, and no container process.
+
+Built entirely in Swift using:
+- **libmp3lame** — MP3 encoding
+- **AudioToolbox** (built into macOS) — AAC-LC encoding with ADTS framing
+- **Network.framework** (built into macOS) — HTTP server
+
+---
+
+## Architecture
+
+```
+stdin (raw 16-bit PCM, interleaved)
+    │
+    ▼
+PCMReader               ← blocking read loop on a dedicated thread
+    │
+    ▼
+PCMBroadcaster          ← fan-out: same PCM chunk → both encoders
+    │                  │
+    ▼                  ▼
+MP3Encoder          AACEncoder
+(libmp3lame)        (AudioToolbox / AudioConverter)
+    │                  │
+    ▼                  ▼
+ChunkBroadcaster   ChunkBroadcaster
+[mp3]              [m4a]
+    │                  │
+    └──────┬───────────┘
+           ▼
+      HTTPServer (NWListener)
+           │
+    ┌──────┴──────┐
+    ▼             ▼
+ /stream.mp3   /stream.m4a
+ (Icecast-     (ADTS AAC,
+  style MP3)    audio/aac)
+```
+
+### Key design decisions
+
+| Concern | Approach |
+|---|---|
+| No file buffering | PCM chunks streamed chunk-by-chunk; clients get data as fast as it encodes |
+| Multiple clients | `ChunkBroadcaster` fans each encoded chunk to all connected clients with back-pressure limiting (2 MB) |
+| Seeking/scrubbing | Not applicable — this is a live stream; `Transfer-Encoding: chunked`, no `Content-Length` |
+| AAC container | Raw ADTS frames (7-byte header per frame). No MP4/moov atom needed — clients decode ADTS natively |
+| SIGPIPE safety | `signal(SIGPIPE, SIG_IGN)` — client disconnect never kills the server process |
+| Thread model | Stdin reader: one dedicated thread. HTTP: `NWConnection` on a concurrent GCD queue. Encoders: inline on PCM reader thread |
+
+---
+
+## Requirements
+
+- macOS 13 (Ventura) or later
+- Xcode 15.4+ / Swift 5.10+ (uses the [Swift Testing](https://github.com/apple/swift-testing) framework for unit tests)
+- `libmp3lame` installed via Homebrew or MacPorts
+
+---
+
+## Install Dependencies
+
+```bash
+brew install lame
+# or
+sudo port install lame pkgconfig
+```
+
+Verify LAME is available:
+
+```bash
+pkg-config --libs mp3lame   # should print something like -L/opt/homebrew/lib -lmp3lame
+```
+
+---
+
+## Build
+
+```bash
+cd LiveAudioServer
+swift build -c release
+```
+
+The binary will be at `.build/release/LiveAudioServer`.
+
+Optionally install system-wide:
+
+```bash
+cp .build/release/LiveAudioServer /usr/local/bin/
+```
+
+### Install via Homebrew tap
+
+A Homebrew formula lives at [`Formula/liveaudioserver.rb`](Formula/liveaudioserver.rb).
+Once a tap repository is published (see "Publishing a tap" below), users can
+install with:
+
+```bash
+brew install dsward2/tap/liveaudioserver
+```
+
+`--HEAD` is also supported (builds from `main` instead of the released tag):
+
+```bash
+brew install --HEAD dsward2/tap/liveaudioserver
+```
+
+#### Publishing a tap
+
+The formula in this repo is the canonical source. To make `brew install
+dsward2/tap/liveaudioserver` work for users, you need a *tap repository*:
+
+1. Create a public GitHub repo named `homebrew-tap` under your account
+   (`github.com/dsward2/homebrew-tap`). The `homebrew-` prefix is required.
+2. Copy `Formula/liveaudioserver.rb` from this repo into
+   `Formula/liveaudioserver.rb` in the tap repo.
+3. Tag a release here: `git tag v0.1.0 && git push --tags`.
+4. Compute the release tarball's SHA256:
+   ```bash
+   curl -sL https://github.com/dsward2/LiveAudioServer/archive/refs/tags/v0.1.0.tar.gz \
+     | shasum -a 256
+   ```
+5. Update `url` and `sha256` in the tap repo's copy of the formula. Push.
+6. Users can now `brew install dsward2/tap/liveaudioserver`.
+
+Subsequent releases: bump the tag, recompute SHA256, update the tap formula.
+
+### Tests
+
+```bash
+swift test
+```
+
+The unit tests use [Swift Testing](https://github.com/apple/swift-testing) and
+cover ADTS frame headers, HLS playlist generation, CLI parsing, the
+now-playing store, and PCM input source formatting.
+
+---
+
+## Usage
+
+```
+LiveAudioServer [options]
+
+Options:
+  -p, --port <port>         HTTP port (default: 8080)
+  -r, --rate <hz>           Input sample rate in Hz (default: 48000)
+  -c, --channels <n>        Input channels: 1=mono, 2=stereo (default: 2)
+  --mp3-bitrate <kbps>      MP3 output bitrate in kbps (default: 128)
+  --aac-bitrate <kbps>      AAC output bitrate in kbps (default: 128)
+  --mp3-mount <path>        HTTP mount point for MP3 (default: /stream.mp3)
+  --m4a-mount <path>        HTTP mount point for M4A/AAC (default: /stream.m4a)
+  --hls-mount <path>        HTTP mount point for HLS playlist (default: /hls/index.m3u8)
+  --chunk-frames <n>        PCM frames per stdin read (default: 4096)
+  --udp-input-port <port>   Receive PCM from UDP on the given port instead of stdin
+  --tcp-input-port <port>   Receive PCM from TCP on the given port instead of stdin
+  --outputs <list>          Comma-separated streaming outputs to enable from:
+                            mp3, aac, hls (default: mp3,aac,hls). Encoders for
+                            disabled outputs are skipped to save CPU.
+  --tls-port <port>         If set, also listen for HTTPS on this port (in
+                            addition to plain HTTP on --port). Requires
+                            --tls-identity.
+  --tls-identity <path>     Path to a PKCS#12 (.p12) file containing the TLS
+                            certificate and private key.
+  --tls-password <value>    Passphrase for --tls-identity. Note: mkcert -pkcs12
+                            uses the password "changeit" by default.
+  --tls-password-env <var>  Read the --tls-identity passphrase from the named
+                            environment variable instead of the command line.
+  --bind <host>             Restrict HTTP/HTTPS listeners to this address
+                            (default: all interfaces). Use 127.0.0.1 for
+                            IPv4 localhost only, ::1 for IPv6 localhost
+                            only, or an explicit LAN address.
+  --allow-ip <list>         Allow HTTP/HTTPS connections only from these
+                            source IPs. Comma-separated list of single IPs
+                            or CIDR ranges, e.g.
+                            "127.0.0.1,192.168.0.0/24,::1". Default: allow
+                            everyone (filtering is applied AFTER --bind).
+  --bonjour <name>          Advertise HTTP/HTTPS listeners on the LAN via
+                            Bonjour (mDNS) under this name, e.g.
+                            "Studio Audio". Default: disabled.
+  --bonjour-inputs          Also advertise the active UDP / TCP input port
+                            via Bonjour (custom service type
+                            _liveaudio-pcm). Requires --bonjour.
+  --stats-interval <secs>   Emit a one-line stats summary to stderr every
+                            <secs> seconds (default: 0 = disabled). A good
+                            starting value is 60 for long-running sessions.
+  --record-mp3 <path>       Also append the encoded MP3 stream to this file
+                            while streaming. Requires mp3 in --outputs.
+  --record-aac <path>       Also append the encoded ADTS AAC stream to this
+                            file while streaming. Requires aac in --outputs.
+  --config <path>           Read defaults from a JSON config file. Any CLI
+                            flag passed alongside it overrides the file's
+                            value. See "Configuration file" below.
+  --keep-alive              Keep HTTP outputs available after stdin reaches EOF
+  -V, --verbose             Verbose logging
+  -v, --version             Print version string and exit
+  -h, --help                Show this help
+```
+
+---
+
+## Examples
+
+### Test with a file (no hardware needed)
+
+```bash
+# Pipe a WAV/FLAC/MP3 file through ffmpeg and into the server
+ffmpeg -i input.wav -f s16le -ar 44100 -ac 2 - \
+  | .build/release/LiveAudioServer
+```
+
+Then open `http://localhost:8080/` in a browser to listen.
+
+### Microphone (macOS built-in or external)
+
+```bash
+# List available devices
+ffmpeg -f avfoundation -list_devices true -i "" 2>&1 | grep -A20 "AVFoundation audio"
+
+# Capture from device index 0 (usually built-in mic)
+ffmpeg -f avfoundation -i ":0" \
+       -f s16le -ar 44100 -ac 1 - \
+  | .build/release/LiveAudioServer --channels 1
+```
+
+### System audio via BlackHole
+
+```bash
+# Install: brew install blackhole-2ch  (or download from Existential Audio)
+ffmpeg -f avfoundation -i "BlackHole 2ch" \
+       -f s16le -ar 48000 -ac 2 - \
+  | .build/release/LiveAudioServer --rate 48000
+```
+
+### Gqrx UDP audio feed
+
+```bash
+# Gqrx commonly sends 16-bit stereo PCM to UDP port 7355.
+# This example assumes Gqrx UDP output is configured for 2-channel stereo.
+ffmpeg -f s16le -ar 48000 -ac 2 -i "udp://localhost:7355?listen" \
+       -f s16le -ar 48000 -ac 2 - \
+  | .build/release/LiveAudioServer --rate 48000 --channels 2
+```
+
+### RTL-SDR via `rtl_fm` (mono)
+
+```bash
+# rtl_fm commonly emits mono 16-bit PCM to stdout, so LiveAudioServer must use --channels 1.
+rtl_fm -f 162.55M -M fm -s 48k -r 48k -E deemp \
+  | .build/release/LiveAudioServer --rate 48000 --channels 1
+```
+
+### High-quality radio stream
+
+```bash
+ffmpeg -i input.flac -f s16le -ar 44100 -ac 2 - \
+  | .build/release/LiveAudioServer \
+      --port 8080 \
+      --mp3-bitrate 320 \
+      --aac-bitrate 256
+```
+
+### 48 kHz mono podcast feed
+
+```bash
+ffmpeg -f avfoundation -i ":1" \
+       -f s16le -ar 48000 -ac 1 - \
+  | .build/release/LiveAudioServer \
+      --rate 48000 \
+      --channels 1 \
+      --mp3-bitrate 96 \
+      --aac-bitrate 96 \
+      -p 9000
+```
+
+---
+
+## Listening to the Stream
+
+### Browser
+
+Open `http://localhost:8080/` — the built-in status page has embedded `<audio>` players for both streams.
+
+### VLC
+
+```bash
+vlc http://localhost:8080/stream.mp3
+vlc http://localhost:8080/stream.m4a
+```
+
+### ffplay
+
+```bash
+ffplay http://localhost:8080/stream.mp3
+ffplay http://localhost:8080/stream.m4a
+```
+
+### mpv
+
+```bash
+mpv http://localhost:8080/stream.mp3
+```
+
+### Re-encode the stream (recording)
+
+```bash
+ffmpeg -i http://localhost:8080/stream.mp3 -c copy recording.mp3
+```
+
+---
+
+## HTTP Endpoints
+
+| Path | Method | Description |
+|---|---|---|
+| `/` | GET | Status page with embedded players; polls `/status.json` every 5s to refresh listener counts and now-playing in place |
+| `/status.json` | GET | JSON document with current listener counts and now-playing record (`{"mp3Clients":N,"m4aClients":N,"nowPlaying":{...}}`) |
+| `/api/now-playing` | GET | Returns the current now-playing record as JSON |
+| `/api/now-playing` | POST | Replaces the now-playing record with the JSON body (see below) |
+| `/api/recorder` | GET | Returns recorder status for each enabled format as JSON |
+| `/api/recorder/{mp3\|aac}/start` | POST | Begins recording to `path` from JSON body |
+| `/api/recorder/{mp3\|aac}/pause` | POST | Pauses recording (file stays open) |
+| `/api/recorder/{mp3\|aac}/resume` | POST | Resumes a paused recording |
+| `/api/recorder/{mp3\|aac}/stop` | POST | Stops recording and closes the file |
+| `/stream.mp3` | GET | Continuous MP3 bitstream (Icecast-compatible) |
+| `/stream.m4a` | GET | Continuous ADTS-framed AAC bitstream (`audio/aac`) |
+| `/hls/index.m3u8` | GET | Live HLS playlist backed by AAC segments |
+
+Routes for disabled outputs return `404` (see `--outputs`).
+
+### Now-playing metadata
+
+An external process can publish "now playing" metadata that the status page
+displays. Posting any combination of fields replaces the current record; the
+server adds a server-side `updated` timestamp. Empty strings clear the field.
+Post `{}` to clear all fields.
+
+```bash
+curl -X POST http://localhost:8080/api/now-playing \
+     -H "Content-Type: application/json" \
+     -d '{"title":"Symphony No. 9","artist":"Beethoven","station":"WCRB","note":"Live from Symphony Hall"}'
+```
+
+Response:
+```json
+{"title":"Symphony No. 9","artist":"Beethoven","station":"WCRB","note":"Live from Symphony Hall","updated":"2026-05-19T18:00:00Z"}
+```
+
+The status page polls `/status.json` every 5 seconds and shows a "Now Playing"
+card whenever any field is non-empty.
+
+**Security**: there is no built-in authentication on `POST /api/now-playing`.
+The recommended deployment is `--bind 127.0.0.1` (or a LAN address behind your
+firewall) so only trusted local processes can reach the endpoint. If you need
+internet exposure, put a real reverse proxy in front (see the Caddy section
+below) with auth configured on `/api/now-playing`.
+
+### Recorder control
+
+Each enabled output format (`mp3`, `aac`) has a state-machine recorder
+controllable at runtime. States are `idle`, `recording`, and `paused`.
+
+```bash
+# Status of all enabled recorders
+curl http://localhost:8080/api/recorder
+
+# Start recording the MP3 stream to a file
+curl -X POST http://localhost:8080/api/recorder/mp3/start \
+     -H "Content-Type: application/json" \
+     -d '{"path":"/tmp/show.mp3"}'
+
+# Pause / resume mid-show
+curl -X POST http://localhost:8080/api/recorder/mp3/pause
+curl -X POST http://localhost:8080/api/recorder/mp3/resume
+
+# Rotate to a new file (closes the previous one)
+curl -X POST http://localhost:8080/api/recorder/mp3/start \
+     -H "Content-Type: application/json" \
+     -d '{"path":"/tmp/show-2.mp3"}'
+
+# Stop recording and close the file
+curl -X POST http://localhost:8080/api/recorder/mp3/stop
+```
+
+Every POST returns the current recorder envelope (same shape as the GET).
+Status shape:
+
+```json
+{"mp3":{"format":"mp3","state":"recording","path":"/tmp/show.mp3","bytesWritten":4096},
+ "aac":{"format":"m4a","state":"idle","bytesWritten":0}}
+```
+
+Calling `/api/recorder/{format}/start` while already recording rotates to the
+new path (previous file is closed). The recorder for a format is only
+available if that format is in `--outputs`; otherwise the route returns `409`.
+
+**Security**: same caveat as `/api/now-playing` — there is no built-in
+authentication. The recommended deployment is `--bind 127.0.0.1` (or a LAN
+address behind your firewall).
+
+---
+
+## HTTPS via Caddy reverse proxy
+
+LiveAudioServer itself speaks plain HTTP. The cleanest way to serve the streams
+over HTTPS is to run [Caddy](https://caddyserver.com) in front, terminating TLS
+and forwarding to LiveAudioServer on `localhost:8080`. With
+[mkcert](https://github.com/FiloSottile/mkcert) the certificates are trusted by
+your local browsers with no warnings.
+
+### Setup (one-time)
+
+Install Caddy and mkcert:
+
+```bash
+# Homebrew
+brew install caddy mkcert nss
+
+# MacPorts
+sudo port install caddy mkcert nss
+```
+
+Install mkcert's local root CA into the macOS keychain (and Firefox via `nss`):
+
+```bash
+mkcert -install
+```
+
+Generate a leaf certificate for localhost. Keep the keys outside the repo:
+
+```bash
+mkdir -p ~/.config/caddy && cd ~/.config/caddy
+mkcert localhost 127.0.0.1 ::1
+# produces:
+#   localhost+2.pem        (certificate)
+#   localhost+2-key.pem    (private key)
+```
+
+Create `~/.config/caddy/Caddyfile`:
+
+```caddy
+localhost:8443 {
+    tls /Users/YOURNAME/.config/caddy/localhost+2.pem /Users/YOURNAME/.config/caddy/localhost+2-key.pem
+
+    # Pass everything through to LiveAudioServer.
+    # flush_interval -1 disables response buffering so live MP3/AAC
+    # chunks are forwarded immediately (essential for low latency).
+    reverse_proxy 127.0.0.1:8080 {
+        flush_interval -1
+    }
+}
+```
+
+### Run
+
+In one terminal, LiveAudioServer as usual:
+
+```bash
+.build/release/LiveAudioServer --udp-input-port 7355
+```
+
+In another terminal:
+
+```bash
+caddy run --config ~/.config/caddy/Caddyfile
+```
+
+Open `https://localhost:8443/` — the status page, all stream endpoints, and
+`/status.json` polling work over HTTPS with no code changes.
+
+### Notes
+
+- **Plain HTTP still works on 8080** for clients (VLC, ffplay, `ffmpeg -i …`)
+  that don't need TLS.
+- **HSTS**: Caddy enables HSTS by default. After visiting `https://localhost:8443`,
+  your browser may auto-upgrade `http://localhost:8080` to HTTPS. Add
+  `auto_https off` to the Caddyfile if you want to keep mixing the two.
+- **Cert renewal**: mkcert leaf certs are valid ~2 years. Re-run
+  `mkcert localhost 127.0.0.1 ::1` when they expire.
+- **LAN access from other devices** (phone, tablet): copy the mkcert root CA
+  (`mkcert -CAROOT` shows its path) to those devices and trust it, or use a real
+  certificate via Caddy's built-in Let's Encrypt support (requires a public DNS
+  name pointing at the host).
+
+---
+
+## Native HTTPS (no proxy)
+
+LiveAudioServer can also terminate TLS itself via macOS's Network.framework, so
+the binary serves both `http://` and `https://` without a sidecar process.
+
+### Generate a PKCS#12 with mkcert
+
+```bash
+mkdir -p ~/.config/liveaudioserver && cd ~/.config/liveaudioserver
+mkcert -pkcs12 localhost 127.0.0.1 ::1
+# produces:  localhost+2.p12
+```
+
+`mkcert -pkcs12` sets the passphrase to **`changeit`** (industry-standard
+placeholder). You'll need to pass it via `--tls-password` or
+`--tls-password-env`.
+
+(If you haven't already run `mkcert -install` for your machine, do that first —
+see the Caddy section above for details.)
+
+### Run with TLS
+
+```bash
+.build/release/LiveAudioServer \
+    --udp-input-port 7355 \
+    --tls-port 8443 \
+    --tls-identity ~/.config/liveaudioserver/localhost+2.p12 \
+    --tls-password changeit
+```
+
+Plain HTTP stays on `--port` (default 8080); HTTPS is added on `--tls-port`.
+Both serve the same status page, JSON polling endpoint, and streams.
+
+Alternative — read the passphrase from the environment so it doesn't appear in
+`ps`/argv:
+
+```bash
+export LIVEAUDIO_TLS_PW=changeit
+.build/release/LiveAudioServer \
+    --udp-input-port 7355 \
+    --tls-port 8443 \
+    --tls-identity ~/.config/liveaudioserver/localhost+2.p12 \
+    --tls-password-env LIVEAUDIO_TLS_PW
+```
+
+### Notes
+
+- **TLS minimum**: enforced at TLS 1.2.
+- **Cert renewal**: replace the `.p12` and restart LiveAudioServer. No hot reload.
+- **Listener semantics**: both listeners share the same request handler, so all
+  routes (`/`, `/status.json`, `/stream.mp3`, `/stream.m4a`, `/hls/index.m3u8`,
+  HLS segments) are reachable on both schemes.
+- **HSTS / HTTP→HTTPS redirect**: not emitted. If you want those, use the Caddy
+  reverse-proxy setup above instead.
+
+---
+
+## Network access control
+
+Two complementary mechanisms keep the streams from being trivially reachable
+by anything that happens to share the network:
+
+1. **`--bind <host>`** controls the kernel-level *listening interface*.
+   Binding to `127.0.0.1` means the OS refuses any packet not from loopback;
+   nothing on the LAN can connect at all.
+
+2. **`--allow-ip <list>`** is a post-accept source-IP filter applied to
+   HTTP/HTTPS connections. Comma-separated list of single IPs and/or CIDR
+   ranges (IPv4 or IPv6). A connection whose source address doesn't match any
+   entry is cancelled before the request is read.
+
+Typical recipes:
+
+```bash
+# Loopback only — same machine, both IPv4 and IPv6.
+LiveAudioServer --bind 127.0.0.1
+LiveAudioServer --bind ::1
+
+# Listen on all interfaces, but only let your home LAN connect.
+LiveAudioServer --allow-ip 192.168.1.0/24,127.0.0.1,::1
+
+# Multiple subnets (IPv4 + IPv6).
+LiveAudioServer --allow-ip 10.0.0.0/8,fd00::/8,127.0.0.1,::1
+
+# Combine — bind to a specific LAN IP and further restrict the source.
+LiveAudioServer --bind 192.168.1.5 --allow-ip 192.168.1.0/24
+```
+
+Notes:
+
+- The PCM input sources (`--udp-input-port`, `--tcp-input-port`) are *not*
+  filtered by `--allow-ip`; that flag governs HTTP/HTTPS only. If you want to
+  lock those down, put them behind a firewall or use `--bind`-equivalent host
+  selection at the network layer.
+- `--allow-ip` matches the connecting client's address — IPv4-mapped IPv6
+  addresses (`::ffff:a.b.c.d`) are normalized to their underlying IPv4 form
+  before comparison, so an IPv4 entry like `127.0.0.1` matches both true IPv4
+  connections and v4-mapped ones from a dual-stack socket.
+- Rejected connections are logged when running with `-V` (verbose).
+
+---
+
+## Bonjour discovery
+
+LiveAudioServer can publish its outputs (and optionally its inputs) over
+Bonjour / DNS-SD so other devices on the LAN can find them by name instead of
+IP address.
+
+```bash
+# Advertise HTTP (and HTTPS, if --tls-port is set) on the LAN.
+LiveAudioServer --bonjour "Studio Audio"
+
+# Also advertise the configured UDP/TCP input port so producers can find it.
+LiveAudioServer --udp-input-port 7355 --bonjour "Studio Audio" --bonjour-inputs
+```
+
+Published service types:
+
+| Service type             | What it represents                                                    |
+|--------------------------|------------------------------------------------------------------------|
+| `_http._tcp.`            | The plain-HTTP listener on `--port`                                    |
+| `_https._tcp.`           | The TLS listener on `--tls-port` (if enabled)                          |
+| `_liveaudio._tcp.`       | Custom output service on the HTTP port with rich TXT metadata          |
+| `_liveaudio-pcm._tcp.`   | The TCP PCM input port (with `--bonjour-inputs`)                       |
+| `_liveaudio-pcm._udp.`   | The UDP PCM input port (with `--bonjour-inputs`)                       |
+
+The `_http._tcp.` service carries a TXT record advertising the active stream
+paths and version. `path=/` is the conventional Safari Bonjour-bookmark key;
+`status=/` is the same path under an explicit name for non-Safari clients:
+
+```
+ver=0.1.0
+path=/
+status=/
+mp3=/stream.mp3
+aac=/stream.m4a
+hls=/hls/index.m3u8
+```
+
+The `_liveaudio._tcp.` custom service carries everything above *plus* config
+details, so a LiveAudioServer-aware client can enumerate all streams in a
+single Bonjour lookup without hitting `/status.json`:
+
+```
+ver=0.1.0
+path=/
+status=/
+rate=48000
+channels=2
+mp3=/stream.mp3
+mp3-bitrate=128
+aac=/stream.m4a
+aac-bitrate=128
+hls=/hls/index.m3u8
+tls-port=8443
+```
+
+You can browse from the command line:
+
+```bash
+dns-sd -B _http._tcp local.            # list all HTTP services on the LAN
+dns-sd -L "Studio Audio" _http._tcp local.   # resolve one to host/port + TXT
+```
+
+Safari (with Bonjour bookmarks enabled in Preferences → Advanced) will also
+list the service.
+
+**Note**: Bonjour multicast happens on the LAN interface(s) the kernel
+considers reachable. Combining `--bonjour` with `--bind 127.0.0.1` will
+register a service that only resolves to the loopback address, which other
+devices on the LAN can't reach — pair Bonjour with a LAN-routable bind
+address (or leave `--bind` at its default).
+
+---
+
+## Configuration file
+
+Instead of (or in addition to) CLI flags, you can put settings in a JSON
+config file and pass `--config <path>`. Every key is optional — only include
+what you want to override. **Precedence**: built-in defaults < config file <
+CLI flags.
+
+Example `server.json`:
+
+```json
+{
+  "port": 8080,
+  "bind": "127.0.0.1",
+  "rate": 48000,
+  "channels": 2,
+  "mp3Bitrate": 192,
+  "aacBitrate": 192,
+  "outputs": ["mp3", "aac", "hls"],
+  "udpInputPort": 7355,
+  "tlsPort": 8443,
+  "tlsIdentity": "/Users/me/.config/liveaudioserver/localhost+2.p12",
+  "tlsPassword": "changeit",
+  "statsInterval": 60,
+  "recordMP3": null,
+  "recordAAC": null,
+  "mountMP3": "/stream.mp3",
+  "mountM4A": "/stream.m4a",
+  "mountHLS": "/hls/index.m3u8",
+  "chunkFrames": 4096,
+  "keepAlive": false,
+  "verbose": false
+}
+```
+
+```bash
+# Use the file as the base; CLI flags override
+.build/release/LiveAudioServer --config server.json
+.build/release/LiveAudioServer --config server.json --port 9000
+```
+
+Notes:
+
+- `mp3Bitrate` / `aacBitrate` are in **kbps** (matching the CLI flags).
+- `outputs` is an array of any subset of `"mp3"`, `"aac"`, `"hls"`.
+- `udpInputPort` and `tcpInputPort` set the input source (last one wins if
+  both appear). Omitting both keeps the default `stdin` input.
+- Unknown keys are silently ignored; an unknown `outputs` token (e.g.
+  `"opus"`) is rejected at startup.
+
+---
+
+## PCM Input Format
+
+The server reads raw **little-endian signed 16-bit PCM** from stdin, UDP, or TCP:
+
+- **Encoding**: `s16le` (signed 16-bit little-endian integers)
+- **Layout**: Interleaved samples (for stereo: L₀ R₀ L₁ R₁ …)
+- **Channels**: 1 (mono) or 2 (stereo) — set with `--channels`
+- **Sample rate**: Any standard rate — set with `--rate`
+
+This is what `ffmpeg -f s16le` produces, which is the standard raw PCM format.
+
+---
+
+## Troubleshooting
+
+### `pkg-config --libs mp3lame` fails
+
+LAME isn't installed or pkg-config can't find it:
+
+```bash
+brew install lame
+# On Apple Silicon, add to your shell profile:
+export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:$PKG_CONFIG_PATH"
+
+# Or with MacPorts:
+sudo port install lame pkgconfig
+export PKG_CONFIG_PATH="/opt/local/lib/pkgconfig:$PKG_CONFIG_PATH"
+export CPATH="/opt/local/include:$CPATH"
+export LIBRARY_PATH="/opt/local/lib:$LIBRARY_PATH"
+```
+
+### Browser plays MP3 but not M4A (or vice versa)
+
+- Safari natively supports ADTS AAC (`audio/aac`)
+- Chrome/Firefox support MP3 natively
+- VLC supports both
+
+### No audio / silent stream
+
+Verify ffmpeg is sending PCM:
+
+```bash
+ffmpeg -i input.wav -f s16le -ar 44100 -ac 2 - | xxd | head
+# You should see non-zero bytes
+```
+
+### High latency
+
+Reduce `--chunk-frames`:
+
+```bash
+... | LiveAudioServer --chunk-frames 1024
+```
+
+Lower values reduce latency but increase CPU overhead. For broadcast use, 4096 is a reasonable default.
+
+---
+
+## File Structure
+
+```
+LiveAudioServer/
+├── Package.swift                         # SPM manifest
+├── Sources/
+│   ├── CLame/
+│   │   ├── include/
+│   │   │   └── lame_shim.h               # Header shim for Homebrew/MacPorts installs
+│   │   └── module.modulemap              # Exposes libmp3lame to SwiftPM
+│   └── LiveAudioServer/
+│       ├── main.swift                    # Entry point, arg parsing, pipeline wiring
+│       ├── Config.swift                  # ServerConfig, shared types
+│       ├── PCMSource.swift               # Stdin / UDP / TCP PCM reader + broadcaster
+│       ├── MP3Encoder.swift              # libmp3lame encoder
+│       ├── AACEncoder.swift              # AudioToolbox AAC encoder + ADTS framing
+│       ├── ChunkBroadcaster.swift        # Per-format encoded chunk fan-out
+│       ├── HLSSegmenter.swift            # In-memory AAC HLS segmenter
+│       └── HTTPServer.swift              # NWListener HTTP server + status page
+└── README.md
+```
+
+---
+
+## License
+
+Apache-2.0. See the `LICENSE` file for the full license text.
+
+This project was developed with assistance from AI coding tools, including Claude,
+for code generation, debugging, and testing support.
