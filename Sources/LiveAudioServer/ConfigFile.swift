@@ -64,6 +64,9 @@ struct ServerConfigFile: Codable {
     var verbose: Bool?
     var bonjour: String?
     var bonjourInputs: Bool?
+    var authUser: String?
+    var authPassword: String?
+    var authRealm: String?
 }
 
 func loadConfigFile(at path: String) throws -> ServerConfigFile {
@@ -101,6 +104,9 @@ func applyConfigFile(_ file: ServerConfigFile, to config: inout ServerConfig) th
     if let v = file.verbose       { config.verbose = v }
     if let v = file.bonjour       { config.bonjourName = v.isEmpty ? nil : v }
     if let v = file.bonjourInputs { config.bonjourAdvertiseInputs = v }
+    if let v = file.authUser      { config.httpAuthUser = v.isEmpty ? nil : v }
+    if let v = file.authPassword  { config.httpAuthPassword = v.isEmpty ? nil : v }
+    if let v = file.authRealm     { config.httpAuthRealm = v }
 
     // udpInputPort / tcpInputPort translate into config.inputSource.
     // If both are set in the file, tcp wins (matching last-CLI-flag-wins on CLI).

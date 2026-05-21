@@ -101,6 +101,16 @@ func printUsage() {
                                 while streaming. Requires mp3 in --outputs.
       --record-aac <path>       Also append the encoded ADTS AAC stream to this
                                 file while streaming. Requires aac in --outputs.
+      --auth-user <name>        Require HTTP Basic authentication on every
+                                request. Must be paired with --auth-password
+                                (or --auth-password-env). Credentials are
+                                base64-encoded on the wire — pair with
+                                --tls-port for non-localhost use.
+      --auth-password <value>   Password for --auth-user.
+      --auth-password-env <var> Read the auth password from the named env var
+                                instead of the command line.
+      --auth-realm <name>       Realm name shown in the browser login dialog
+                                (default: "LiveAudioServer").
       --config <path>           Read defaults from a JSON config file. Any CLI
                                 flag passed alongside it overrides the file's
                                 value. See the README for the full schema.
@@ -328,6 +338,30 @@ func parseCLI(_ args: [String]) -> CLIParseResult {
             i += 1
             guard i < args.count else { return .error("Missing --record-aac path") }
             config.recordAACPath = args[i]
+        case "--auth-user":
+            i += 1
+            guard i < args.count else { return .error("Missing --auth-user value") }
+            let u = args[i]
+            guard !u.isEmpty else { return .error("--auth-user cannot be empty") }
+            guard !u.contains(":") else { return .error("--auth-user cannot contain ':' (RFC 7617)") }
+            config.httpAuthUser = u
+        case "--auth-password":
+            i += 1
+            guard i < args.count else { return .error("Missing --auth-password value") }
+            config.httpAuthPassword = args[i]
+        case "--auth-password-env":
+            i += 1
+            guard i < args.count else { return .error("Missing --auth-password-env name") }
+            guard let v = ProcessInfo.processInfo.environment[args[i]] else {
+                return .error("Env var \(args[i]) not set (referenced by --auth-password-env)")
+            }
+            config.httpAuthPassword = v
+        case "--auth-realm":
+            i += 1
+            guard i < args.count else { return .error("Missing --auth-realm value") }
+            let r = args[i].trimmingCharacters(in: .whitespaces)
+            guard !r.isEmpty else { return .error("--auth-realm cannot be empty") }
+            config.httpAuthRealm = r
         case "--keep-alive":
             config.keepAliveOnInputEnd = true
         case "-V", "--verbose":
@@ -357,6 +391,12 @@ func parseCLI(_ args: [String]) -> CLIParseResult {
     }
     if config.bonjourAdvertiseInputs && config.bonjourName == nil {
         return .error("--bonjour-inputs requires --bonjour")
+    }
+    if config.httpAuthUser != nil && config.httpAuthPassword == nil {
+        return .error("--auth-user requires --auth-password or --auth-password-env")
+    }
+    if config.httpAuthPassword != nil && config.httpAuthUser == nil {
+        return .error("--auth-password requires --auth-user")
     }
 
     return .run(config)
@@ -408,6 +448,12 @@ struct LiveAudioServerApp {
         }
         if let acl = config.allowedClientIPs, !acl.allowAll {
             log("   ACL    : \(acl.matchers.count) allow-list entr\(acl.matchers.count == 1 ? "y" : "ies") — only matching client IPs accepted")
+        }
+        if let user = config.httpAuthUser, config.httpAuthPassword != nil {
+            log("   Auth   : HTTP Basic enabled (user=\(user), realm=\"\(config.httpAuthRealm)\")")
+            if config.tlsPort == nil {
+                log("   ⚠️  HTTP Basic credentials travel base64-encoded; enable --tls-port for non-localhost use.")
+            }
         }
         if let bname = config.bonjourName {
             let scope = config.bonjourAdvertiseInputs ? "outputs + inputs" : "outputs only"

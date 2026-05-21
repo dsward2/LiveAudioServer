@@ -91,6 +91,16 @@ struct ServerConfig {
     var recordMP3Path: String? = nil
     /// Optional file path: write encoded ADTS AAC chunks here while streaming.
     var recordAACPath: String? = nil
+    /// If set together with `httpAuthPassword`, every HTTP/HTTPS request must
+    /// carry an `Authorization: Basic` header whose decoded user:password
+    /// matches these values. `nil` (the default) disables auth entirely.
+    /// Credentials travel base64-encoded (effectively plaintext) — pair with
+    /// `--tls-port` for real deployments.
+    var httpAuthUser: String? = nil
+    var httpAuthPassword: String? = nil
+    /// Realm string surfaced in the `WWW-Authenticate` header on a 401. The
+    /// browser uses this to decide whether to reuse cached credentials.
+    var httpAuthRealm: String = "LiveAudioServer"
     var mountHLSSegmentPrefix: String = "/hls/seg-"
     var hlsSegmentDuration: Double = 2.0
     var hlsPlaylistWindowSize: Int = 5

@@ -58,6 +58,64 @@ private func notFoundResponse() -> Data {
     ]) + bodyData
 }
 
+// MARK: - HTTP Basic Auth Helpers
+
+/// Sanitize a realm value for safe inclusion in a `WWW-Authenticate` header.
+/// RFC 7617 realms are quoted-strings, so strip the characters that would
+/// require escaping (`"` and `\`) and the CR/LF that would let a caller-supplied
+/// realm inject extra headers.
+private func sanitizedRealm(_ raw: String) -> String {
+    raw.unicodeScalars.filter { scalar in
+        scalar != "\"" && scalar != "\\" && scalar != "\r" && scalar != "\n"
+    }.reduce(into: "") { $0.unicodeScalars.append($1) }
+}
+
+/// Pull the first `Authorization` header value (case-insensitive on the name)
+/// out of a raw HTTP header block. Returns nil when absent.
+private func parseAuthorizationHeader(_ headers: String) -> String? {
+    for line in headers.components(separatedBy: "\r\n") {
+        let pieces = line.split(separator: ":", maxSplits: 1).map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }
+        if pieces.count == 2, pieces[0].lowercased() == "authorization" {
+            return pieces[1]
+        }
+    }
+    return nil
+}
+
+/// Constant-time byte comparison. Length difference is folded in so callers
+/// don't leak password length via early-exit timing.
+private func constantTimeEqual(_ a: [UInt8], _ b: [UInt8]) -> Bool {
+    var diff: UInt32 = UInt32(a.count) ^ UInt32(b.count)
+    let n = min(a.count, b.count)
+    for i in 0..<n {
+        diff |= UInt32(a[i] ^ b[i])
+    }
+    return diff == 0
+}
+
+/// Validate an `Authorization: Basic …` header against expected credentials.
+/// Returns true only when the scheme is `Basic`, the payload base64-decodes
+/// cleanly, and both fields match.
+func verifyBasicAuth(headerValue: String?, user: String, password: String) -> Bool {
+    guard let value = headerValue else { return false }
+    let trimmed = value.trimmingCharacters(in: .whitespaces)
+    let parts = trimmed.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+    guard parts.count == 2, parts[0].lowercased() == "basic" else { return false }
+    let b64 = parts[1].trimmingCharacters(in: .whitespaces)
+    guard let decoded = Data(base64Encoded: b64),
+          let pair = String(data: decoded, encoding: .utf8) else { return false }
+    // The first ':' separates user from password. Passwords may legitimately
+    // contain ':'; usernames per RFC 7617 may not.
+    guard let colon = pair.firstIndex(of: ":") else { return false }
+    let suppliedUser = String(pair[..<colon])
+    let suppliedPass = String(pair[pair.index(after: colon)...])
+    let userOK = constantTimeEqual(Array(suppliedUser.utf8), Array(user.utf8))
+    let passOK = constantTimeEqual(Array(suppliedPass.utf8), Array(password.utf8))
+    return userOK && passOK
+}
+
 // MARK: - Status Page
 
 func statusPage(config: ServerConfig,
@@ -506,6 +564,19 @@ final class HTTPConnection {
             log("\(method) \(path)")
         }
 
+        // HTTP Basic auth gate. When credentials are configured every route
+        // (including the streams and the status page) requires them. We
+        // intentionally check before any routing so a 401 challenge is
+        // returned uniformly, which is also what triggers the browser's
+        // login dialog.
+        if let user = config.httpAuthUser, let password = config.httpAuthPassword {
+            let header = parseAuthorizationHeader(headers)
+            if !verifyBasicAuth(headerValue: header, user: user, password: password) {
+                sendUnauthorized(realm: config.httpAuthRealm)
+                return
+            }
+        }
+
         // Methods other than GET/HEAD are only allowed for explicit POST routes.
         switch (method, path) {
         case ("POST", "/api/now-playing"):
@@ -560,6 +631,24 @@ final class HTTPConnection {
             "Content-Type":   "text/plain; charset=utf-8",
             "Content-Length": "\(body.count)",
             "Connection":     "close"
+        ])
+        var response = headers
+        response.append(body)
+        connection.send(content: response, completion: .contentProcessed { [weak self] _ in
+            self?.connection.cancel()
+        })
+    }
+
+    /// 401 Unauthorized with a `WWW-Authenticate: Basic` challenge so browsers
+    /// prompt for credentials. The body is a small human-readable note.
+    private func sendUnauthorized(realm: String) {
+        let body = Data("401 Unauthorized\n".utf8)
+        let headers = httpHeaders(status: 401, statusText: "Unauthorized", fields: [
+            "Content-Type":     "text/plain; charset=utf-8",
+            "Content-Length":   "\(body.count)",
+            "Connection":       "close",
+            "Cache-Control":    "no-store",
+            "WWW-Authenticate": "Basic realm=\"\(sanitizedRealm(realm))\", charset=\"UTF-8\""
         ])
         var response = headers
         response.append(body)

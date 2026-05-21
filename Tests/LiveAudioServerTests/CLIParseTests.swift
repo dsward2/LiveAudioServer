@@ -3,6 +3,7 @@
 // Copyright (c)2026 by Douglas Ward - Conway, Arkansas US
 // Licensed under the Apache License, Version 2.0.
 
+import Foundation
 import Testing
 @testable import LiveAudioServer
 
@@ -160,5 +161,85 @@ struct CLIParseTests {
         if case .printUsage = parseCLI(["-h"]) {} else {
             Issue.record("Expected .printUsage")
         }
+    }
+
+    @Test("--auth-user + --auth-password populates config")
+    func authFlagsSetConfig() {
+        let cfg = runConfig(["--auth-user", "alice", "--auth-password", "s3cret"])
+        #expect(cfg?.httpAuthUser == "alice")
+        #expect(cfg?.httpAuthPassword == "s3cret")
+        #expect(cfg?.httpAuthRealm == "LiveAudioServer")
+    }
+
+    @Test("--auth-user without --auth-password errors")
+    func authUserRequiresPassword() {
+        let msg = parseError(["--auth-user", "alice"])
+        #expect(msg?.contains("--auth-password") == true)
+    }
+
+    @Test("--auth-password without --auth-user errors")
+    func authPasswordRequiresUser() {
+        let msg = parseError(["--auth-password", "s3cret"])
+        #expect(msg?.contains("--auth-user") == true)
+    }
+
+    @Test("--auth-user with ':' is rejected")
+    func authUserRejectsColon() {
+        #expect(parseError(["--auth-user", "al:ice", "--auth-password", "x"]) != nil)
+    }
+
+    @Test("--auth-realm overrides the default")
+    func authRealmOverride() {
+        let cfg = runConfig(["--auth-user", "a", "--auth-password", "b", "--auth-realm", "Studio"])
+        #expect(cfg?.httpAuthRealm == "Studio")
+    }
+}
+
+@Suite("HTTP Basic auth")
+struct BasicAuthTests {
+    private func basicHeader(_ user: String, _ password: String) -> String {
+        let raw = "\(user):\(password)"
+        let b64 = Data(raw.utf8).base64EncodedString()
+        return "Basic \(b64)"
+    }
+
+    @Test("Valid credentials succeed")
+    func validCredentials() {
+        let header = basicHeader("alice", "s3cret")
+        #expect(verifyBasicAuth(headerValue: header, user: "alice", password: "s3cret"))
+    }
+
+    @Test("Wrong password fails")
+    func wrongPassword() {
+        let header = basicHeader("alice", "nope")
+        #expect(!verifyBasicAuth(headerValue: header, user: "alice", password: "s3cret"))
+    }
+
+    @Test("Wrong user fails")
+    func wrongUser() {
+        let header = basicHeader("bob", "s3cret")
+        #expect(!verifyBasicAuth(headerValue: header, user: "alice", password: "s3cret"))
+    }
+
+    @Test("Missing header fails")
+    func missingHeader() {
+        #expect(!verifyBasicAuth(headerValue: nil, user: "alice", password: "s3cret"))
+    }
+
+    @Test("Non-Basic scheme fails")
+    func nonBasicScheme() {
+        #expect(!verifyBasicAuth(headerValue: "Bearer abc.def.ghi", user: "alice", password: "s3cret"))
+    }
+
+    @Test("Password containing ':' is parsed correctly")
+    func passwordContainingColon() {
+        let header = basicHeader("alice", "a:b:c")
+        #expect(verifyBasicAuth(headerValue: header, user: "alice", password: "a:b:c"))
+    }
+
+    @Test("Scheme name is case-insensitive")
+    func schemeIsCaseInsensitive() {
+        let header = basicHeader("alice", "s3cret").replacingOccurrences(of: "Basic", with: "BASIC")
+        #expect(verifyBasicAuth(headerValue: header, user: "alice", password: "s3cret"))
     }
 }
