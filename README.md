@@ -190,6 +190,16 @@ Options:
                             while streaming. Requires mp3 in --outputs.
   --record-aac <path>       Also append the encoded ADTS AAC stream to this
                             file while streaming. Requires aac in --outputs.
+  --auth-user <name>        Require HTTP Basic authentication on every
+                            request. Must be paired with --auth-password
+                            (or --auth-password-env). Credentials are
+                            base64-encoded on the wire — pair with
+                            --tls-port for non-localhost use.
+  --auth-password <value>   Password for --auth-user.
+  --auth-password-env <var> Read the auth password from the named env var
+                            instead of the command line.
+  --auth-realm <name>       Realm name shown in the browser login dialog
+                            (default: "LiveAudioServer").
   --config <path>           Read defaults from a JSON config file. Any CLI
                             flag passed alongside it overrides the file's
                             value. See "Configuration file" below.
@@ -351,11 +361,12 @@ Response:
 The status page polls `/status.json` every 5 seconds and shows a "Now Playing"
 card whenever any field is non-empty.
 
-**Security**: there is no built-in authentication on `POST /api/now-playing`.
-The recommended deployment is `--bind 127.0.0.1` (or a LAN address behind your
-firewall) so only trusted local processes can reach the endpoint. If you need
-internet exposure, put a real reverse proxy in front (see the Caddy section
-below) with auth configured on `/api/now-playing`.
+**Security**: this endpoint inherits the same protection as every other
+route. If LiveAudioServer is started with `--auth-user`/`--auth-password`,
+callers must present HTTP Basic credentials (see "HTTP Basic authentication"
+below); otherwise it's open. The recommended deployment is `--bind 127.0.0.1`
+(or a LAN address behind your firewall) so only trusted local processes can
+reach the endpoint.
 
 ### Recorder control
 
@@ -396,93 +407,34 @@ Calling `/api/recorder/{format}/start` while already recording rotates to the
 new path (previous file is closed). The recorder for a format is only
 available if that format is in `--outputs`; otherwise the route returns `409`.
 
-**Security**: same caveat as `/api/now-playing` — there is no built-in
-authentication. The recommended deployment is `--bind 127.0.0.1` (or a LAN
-address behind your firewall).
+**Security**: same protection as every other route — gate the whole server
+with `--auth-user`/`--auth-password` and/or restrict the listening interface
+with `--bind 127.0.0.1`.
 
 ---
 
-## HTTPS via Caddy reverse proxy
+## Using Caddy in front (optional)
 
-LiveAudioServer itself speaks plain HTTP. The cleanest way to serve the streams
-over HTTPS is to run [Caddy](https://caddyserver.com) in front, terminating TLS
-and forwarding to LiveAudioServer on `localhost:8080`. With
-[mkcert](https://github.com/FiloSottile/mkcert) the certificates are trusted by
-your local browsers with no warnings.
+The built-in `--tls-port` listener (next section) handles most HTTPS needs. A
+reverse proxy like [Caddy](https://caddyserver.com) is still the right tool
+for two cases:
 
-### Setup (one-time)
+- **Publicly-trusted certificates**: Caddy automates Let's Encrypt for
+  internet-exposed deployments (requires a public DNS name on the host).
+- **HSTS and HTTP→HTTPS redirects**: Caddy emits both by default; the native
+  TLS listener does not.
 
-Install Caddy and mkcert:
-
-```bash
-# Homebrew
-brew install caddy mkcert nss
-
-# MacPorts
-sudo port install caddy mkcert nss
-```
-
-Install mkcert's local root CA into the macOS keychain (and Firefox via `nss`):
-
-```bash
-mkcert -install
-```
-
-Generate a leaf certificate for localhost. Keep the keys outside the repo:
-
-```bash
-mkdir -p ~/.config/caddy && cd ~/.config/caddy
-mkcert localhost 127.0.0.1 ::1
-# produces:
-#   localhost+2.pem        (certificate)
-#   localhost+2-key.pem    (private key)
-```
-
-Create `~/.config/caddy/Caddyfile`:
+Minimal Caddyfile that proxies the streams without buffering them:
 
 ```caddy
-localhost:8443 {
-    tls /Users/YOURNAME/.config/caddy/localhost+2.pem /Users/YOURNAME/.config/caddy/localhost+2-key.pem
-
-    # Pass everything through to LiveAudioServer.
-    # flush_interval -1 disables response buffering so live MP3/AAC
-    # chunks are forwarded immediately (essential for low latency).
+example.com {
     reverse_proxy 127.0.0.1:8080 {
-        flush_interval -1
+        flush_interval -1   # essential - keeps live MP3/AAC chunks streaming
     }
 }
 ```
 
-### Run
-
-In one terminal, LiveAudioServer as usual:
-
-```bash
-.build/release/LiveAudioServer --udp-input-port 7355
-```
-
-In another terminal:
-
-```bash
-caddy run --config ~/.config/caddy/Caddyfile
-```
-
-Open `https://localhost:8443/` — the status page, all stream endpoints, and
-`/status.json` polling work over HTTPS with no code changes.
-
-### Notes
-
-- **Plain HTTP still works on 8080** for clients (VLC, ffplay, `ffmpeg -i …`)
-  that don't need TLS.
-- **HSTS**: Caddy enables HSTS by default. After visiting `https://localhost:8443`,
-  your browser may auto-upgrade `http://localhost:8080` to HTTPS. Add
-  `auto_https off` to the Caddyfile if you want to keep mixing the two.
-- **Cert renewal**: mkcert leaf certs are valid ~2 years. Re-run
-  `mkcert localhost 127.0.0.1 ::1` when they expire.
-- **LAN access from other devices** (phone, tablet): copy the mkcert root CA
-  (`mkcert -CAROOT` shows its path) to those devices and trust it, or use a real
-  certificate via Caddy's built-in Let's Encrypt support (requires a public DNS
-  name pointing at the host).
+Then `caddy run --config /path/to/Caddyfile`.
 
 ---
 
@@ -585,6 +537,48 @@ Notes:
   before comparison, so an IPv4 entry like `127.0.0.1` matches both true IPv4
   connections and v4-mapped ones from a dual-stack socket.
 - Rejected connections are logged when running with `-V` (verbose).
+
+---
+
+## HTTP Basic authentication
+
+A realm-style login gate can be enabled on every HTTP/HTTPS route — streams,
+status page, JSON polling, recorder API, and the now-playing endpoint all
+share one realm. Browsers pop a credential dialog; CLI clients send
+`Authorization: Basic <base64>`.
+
+```bash
+# Require credentials on every request.
+.build/release/LiveAudioServer --auth-user alice --auth-password s3cret
+
+# Read the password from an env var so it doesn't appear in `ps`/argv.
+export LIVEAUDIO_AUTH_PW=s3cret
+.build/release/LiveAudioServer --auth-user alice --auth-password-env LIVEAUDIO_AUTH_PW
+
+# Custom realm name (default: "LiveAudioServer").
+.build/release/LiveAudioServer --auth-user alice --auth-password s3cret \
+                               --auth-realm "Studio"
+```
+
+Test it from the command line:
+
+```bash
+curl -i http://localhost:8080/                # → 401 Unauthorized + WWW-Authenticate
+curl -i -u alice:s3cret http://localhost:8080/ # → 200 OK
+```
+
+Notes:
+
+- **Pair with TLS.** HTTP Basic credentials travel base64-encoded, not
+  encrypted. For anything beyond loopback, also enable `--tls-port` so the
+  Authorization header rides inside TLS. Startup logs a ⚠ warning when auth
+  is configured without TLS.
+- **All routes, one credential.** There is no "anonymous streams +
+  authenticated admin" mode — auth either applies to everything or to
+  nothing.
+- **Constant-time comparison** is used on the username and password so an
+  attacker can't time-attack the credentials.
+- **Config-file equivalents**: `authUser`, `authPassword`, `authRealm`.
 
 ---
 
@@ -691,7 +685,10 @@ Example `server.json`:
   "mountHLS": "/hls/index.m3u8",
   "chunkFrames": 4096,
   "keepAlive": false,
-  "verbose": false
+  "verbose": false,
+  "authUser": "alice",
+  "authPassword": "s3cret",
+  "authRealm": "LiveAudioServer"
 }
 ```
 
