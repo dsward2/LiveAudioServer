@@ -2,6 +2,13 @@
 
 A zero-UI macOS command-line tool that reads **live 16-bit PCM audio from stdin or a UDP/TCP socket** and streams it simultaneously as **MP3** and **AAC/M4A** over HTTP — with no intermediate files, no third-party server, and no container process.
 
+> ⚠️ **Experimental — use at your own risk.** This project was created with
+> the help of Claude AI and is intended for hobbyist use on a private LAN.
+> It has not been audited for security and has not been load-tested for
+> production capacity. Do not expose it directly to the public internet
+> without putting it behind an audited reverse proxy and additional
+> hardening of your own.
+
 Built entirely in Swift using:
 - **libmp3lame** — MP3 encoding
 - **AudioToolbox** (built into macOS) — AAC-LC encoding with ADTS framing
