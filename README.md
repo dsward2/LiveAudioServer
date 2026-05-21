@@ -1,5 +1,7 @@
 # LiveAudioServer
 
+Project home: <https://github.com/dsward2/LiveAudioServer>
+
 A zero-UI macOS command-line tool that reads **live 16-bit PCM audio from stdin or a UDP/TCP socket** and streams it simultaneously as **MP3** and **AAC/M4A** over HTTP — with no intermediate files, no third-party server, and no container process.
 
 > ⚠️ **Experimental — use at your own risk.** This project was created with
@@ -19,7 +21,9 @@ Built entirely in Swift using:
 ## Architecture
 
 ```
-stdin (raw 16-bit PCM, interleaved)
+PCM input (raw 16-bit signed little-endian, interleaved)
+  source: stdin │ UDP socket │ TCP socket
+  layout: 1 or 2 channels, typically 48 kHz (configurable via --rate)
     │
     ▼
 PCMReader               ← blocking read loop on a dedicated thread
@@ -247,6 +251,17 @@ ffmpeg -f avfoundation -i ":0" \
 ```bash
 # Install: brew install blackhole-2ch  (or download from Existential Audio)
 ffmpeg -f avfoundation -i "BlackHole 2ch" \
+       -f s16le -ar 48000 -ac 2 - \
+  | .build/release/LiveAudioServer --rate 48000
+```
+
+### System audio via VB-CABLE
+
+```bash
+# Install: download the macOS package from https://vb-audio.com/Cable/
+# (no Homebrew formula). The capture endpoint shows up in ffmpeg's
+# avfoundation device list as "VB-Cable".
+ffmpeg -f avfoundation -i "VB-Cable" \
        -f s16le -ar 48000 -ac 2 - \
   | .build/release/LiveAudioServer --rate 48000
 ```
