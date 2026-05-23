@@ -1,6 +1,5 @@
 # -*- coding: utf-8; mode: tcl; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
-# vim:fenc=utf-8:ft=tcl:et:sw=4:ts=4:sts=4
-#
+
 # LiveAudioServer — https://github.com/dsward2/LiveAudioServer
 #
 # Submission notes (for macports.org):
@@ -36,9 +35,9 @@ long_description    \
 
 homepage            https://github.com/dsward2/LiveAudioServer
 
-checksums           rmd160  0000000000000000000000000000000000000000 \
-                    sha256  0000000000000000000000000000000000000000000000000000000000000000 \
-                    size    0
+checksums           rmd160  52056845552a4cebe5ca5e1a0f9e9972f314596d \
+                    sha256  4c63a4d086ab37c78445f885cee26df16dbf2f6e3627e6a2902d97a09e5f4a7d \
+                    size    61841
 
 # macOS 13 Ventura or later (matches the SwiftPM Package.swift `.macOS(.v13)`
 # platform requirement and the AudioToolbox / Network.framework APIs in use).
