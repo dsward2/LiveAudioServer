@@ -227,8 +227,10 @@ Options:
 ### Test with a file (no hardware needed)
 
 ```bash
-# Pipe a WAV/FLAC/MP3 file through ffmpeg and into the server
-ffmpeg -i input.wav -f s16le -ar 44100 -ac 2 - \
+# Pipe a WAV/FLAC/MP3 file through ffmpeg and into the server. The
+# -stream_loop -1 flag loops the file indefinitely, so the stream
+# keeps running for as long as the server is up.
+ffmpeg -stream_loop -1 -i input.wav -f s16le -ar 44100 -ac 2 - \
   | .build/release/LiveAudioServer
 ```
 
