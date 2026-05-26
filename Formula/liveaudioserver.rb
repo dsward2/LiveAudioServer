@@ -18,20 +18,26 @@ class Liveaudioserver < Formula
   desc "Live audio streaming server (MP3 + AAC + HLS) for macOS"
   homepage "https://github.com/dsward2/LiveAudioServer"
   url "https://github.com/dsward2/LiveAudioServer/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"   # TODO: replace at release time
+  sha256 "4c63a4d086ab37c78445f885cee26df16dbf2f6e3627e6a2902d97a09e5f4a7d"
   license "Apache-2.0"
   head "https://github.com/dsward2/LiveAudioServer.git", branch: "main"
 
   depends_on macos: :ventura
   depends_on "lame"
-  depends_on "pkgconf" => :build
 
   def install
     # --disable-sandbox is required for SwiftPM under Homebrew, which
     # otherwise can't fetch its own toolchain cache.
+    #
+    # Pass -I/-L explicitly because Homebrew's lame keg does not ship a
+    # mp3lame.pc; the CLame system-library target's pkgConfig: "mp3lame"
+    # lookup therefore returns no flags and the lame_shim.h #include
+    # cascade fails to find <lame/lame.h>.
     system "swift", "build",
                     "--configuration", "release",
-                    "--disable-sandbox"
+                    "--disable-sandbox",
+                    "-Xcc", "-I#{Formula["lame"].opt_include}",
+                    "-Xlinker", "-L#{Formula["lame"].opt_lib}"
     bin.install ".build/release/LiveAudioServer" => "liveaudioserver"
   end
 
