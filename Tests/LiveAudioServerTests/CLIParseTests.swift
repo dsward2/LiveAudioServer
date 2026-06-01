@@ -193,6 +193,42 @@ struct CLIParseTests {
         let cfg = runConfig(["--auth-user", "a", "--auth-password", "b", "--auth-realm", "Studio"])
         #expect(cfg?.httpAuthRealm == "Studio")
     }
+
+    @Test("--silence-dither toggles the flag")
+    func silenceDitherFlag() {
+        let cfg = runConfig(["--silence-dither"])
+        #expect(cfg?.silenceDitherEnabled == true)
+        let off = runConfig([])
+        #expect(off?.silenceDitherEnabled == false)
+    }
+
+    @Test("--silence-dither-ms converts to sample count using the configured rate/channels")
+    func silenceDitherThreshold() {
+        // 1000 ms × 48000 Hz × 2 ch = 96000 samples (default rate/channels).
+        let cfg = runConfig(["--silence-dither-ms", "1000"])
+        #expect(cfg?.silenceDitherThresholdSamples == 96_000)
+    }
+
+    @Test("--silence-dither-ms respects --rate / --channels regardless of order")
+    func silenceDitherThresholdOrdering() {
+        // 250 ms × 44100 Hz × 1 ch = 11025 samples — pass flags out of order
+        // to confirm the deferred conversion uses the final rate / channels.
+        let cfg = runConfig(["--silence-dither-ms", "250", "--rate", "44100", "--channels", "1"])
+        #expect(cfg?.silenceDitherThresholdSamples == 11_025)
+    }
+
+    @Test("--silence-dither-ms rejects negative values")
+    func silenceDitherThresholdNegative() {
+        #expect(parseError(["--silence-dither-ms", "-1"]) != nil)
+    }
+
+    @Test("--no-fifo-reopen disables FIFO reopen")
+    func noFifoReopenFlag() {
+        let cfg = runConfig(["--no-fifo-reopen"])
+        #expect(cfg?.reopenStdinFIFO == false)
+        let dflt = runConfig([])
+        #expect(dflt?.reopenStdinFIFO == true)
+    }
 }
 
 @Suite("HTTP Basic auth")

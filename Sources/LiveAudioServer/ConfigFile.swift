@@ -61,6 +61,9 @@ struct ServerConfigFile: Codable {
     var mountHLS: String?
     var chunkFrames: Int?
     var keepAlive: Bool?
+    var reopenFIFO: Bool?
+    var silenceDither: Bool?
+    var silenceDitherMs: Int?
     var verbose: Bool?
     var bonjour: String?
     var bonjourInputs: Bool?
@@ -101,6 +104,15 @@ func applyConfigFile(_ file: ServerConfigFile, to config: inout ServerConfig) th
     if let v = file.mountHLS      { config.mountHLSIndex = v }
     if let v = file.chunkFrames   { config.stdinChunkFrames = v }
     if let v = file.keepAlive     { config.keepAliveOnInputEnd = v }
+    if let v = file.reopenFIFO    { config.reopenStdinFIFO = v }
+    if let v = file.silenceDither { config.silenceDitherEnabled = v }
+    if let v = file.silenceDitherMs {
+        // Convert ms → sample count using the (possibly already file-set)
+        // rate and channel count. CLI-applied --rate / --channels later may
+        // override these; the CLI parser re-derives the threshold in that
+        // case via --silence-dither-ms.
+        config.silenceDitherThresholdSamples = (v * config.sampleRate * config.channels) / 1000
+    }
     if let v = file.verbose       { config.verbose = v }
     if let v = file.bonjour       { config.bonjourName = v.isEmpty ? nil : v }
     if let v = file.bonjourInputs { config.bonjourAdvertiseInputs = v }

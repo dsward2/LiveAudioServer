@@ -6,6 +6,13 @@
 /Packages
 Package.resolved
 
+# libmp3lame XCFramework build workspace (the resulting
+# Frameworks/Mp3Lame.xcframework is committed; this is just the temp build dir).
+/.build-mp3lame
+
+# Release artifacts produced by scripts/release.sh — never committed.
+/build
+
 # Xcode
 xcuserdata/
 DerivedData/

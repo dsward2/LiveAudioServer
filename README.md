@@ -63,31 +63,82 @@ ChunkBroadcaster   ChunkBroadcaster
 
 ---
 
-## Requirements
+## Install — pre-built binary (recommended for non-developers)
+
+If you just want to run LiveAudioServer without installing Xcode or any
+developer tools:
+
+1. Go to the [Releases page](https://github.com/dsward2/LiveAudioServer/releases)
+   and download the latest `LiveAudioServer-vX.Y.Z-macos-universal.zip`.
+2. Unzip it (Finder will do this when you double-click).
+3. Open the unzipped folder and **right-click `Start LiveAudioServer.command`
+   → Open** (see "First-launch Gatekeeper note" below — this only matters
+   the first time). A Terminal window opens, the server starts with
+   defaults tuned for the Gqrx + RTL-SDR use case, and prints the LAN URL
+   you can open from another device on the network.
+4. Press Control-C in that window (or close it) to stop the server.
+
+On every subsequent run, you can simply double-click the launcher.
+
+To change defaults (UDP input port, sample rate, channels, Bonjour name),
+open `Start LiveAudioServer.command` in TextEdit and edit the `LAS_*`
+variables near the top.
+
+### First-launch Gatekeeper note
+
+The `liveaudioserver` binary inside the zip *is* signed with an Apple
+Developer ID and fully notarized — Gatekeeper accepts it without any
+prompts. The wrapper that's still flagged is `Start LiveAudioServer.command`,
+which is a plain shell script. macOS doesn't support notarizing shell
+scripts, so the first time you run it from a downloaded zip you'll see:
+
+> "Apple could not verify '\<name\>' is free of malware…"
+
+This is a one-time prompt. To get past it:
+
+**macOS 13–14** — In Finder, **right-click** (or Control-click)
+`Start LiveAudioServer.command` and choose **Open**. A second dialog
+appears with an actual **Open** button — click it. The script runs and
+macOS remembers your choice for future launches.
+
+**macOS 15 (Sequoia) and later** — Apple removed the right-click bypass.
+Instead:
+
+1. Double-click `Start LiveAudioServer.command` once (it'll get blocked).
+2. Open **System Settings → Privacy & Security**, scroll to the **Security**
+   section near the bottom.
+3. You'll see "`Start LiveAudioServer.command` was blocked to protect your
+   Mac." Click **Open Anyway**.
+4. Confirm with your password / Touch ID.
+
+After that one-time approval, the launcher opens normally on every
+subsequent run.
+
+> A future release will replace this loose-script launcher with a proper
+> notarized `.app` bundle so the first-launch prompt goes away entirely.
+
+### Typical setup: Gqrx → LiveAudioServer → iPhone
+
+1. In **Gqrx**, enable *Remote Control → Network → UDP output* (default port
+   `7355`, 48 kHz, stereo).
+2. Double-click `Start LiveAudioServer.command`.
+3. On your iPhone (same Wi-Fi), open Safari and go to
+   `http://<your-mac-name>.local:8080/`. The status page has an embedded
+   player — tap **Play**.
+
+---
+
+## Build from source
+
+### Requirements
 
 - macOS 13 (Ventura) or later
 - Xcode 15.4+ / Swift 5.10+ (uses the [Swift Testing](https://github.com/apple/swift-testing) framework for unit tests)
-- `libmp3lame` installed via Homebrew or MacPorts
 
----
-
-## Install Dependencies
-
-```bash
-brew install lame
-# or
-sudo port install lame pkgconfig
-```
-
-Verify LAME is available:
-
-```bash
-pkg-config --libs mp3lame   # should print something like -L/opt/homebrew/lib -lmp3lame
-```
-
----
-
-## Build
+No external package manager required. `libmp3lame` ships pre-built as a
+universal (arm64 + x86_64) static XCFramework at
+[`Frameworks/Mp3Lame.xcframework`](Frameworks/Mp3Lame.xcframework) and is
+consumed by SwiftPM as a binary target.
 
 ```bash
 cd LiveAudioServer
@@ -95,6 +146,22 @@ swift build -c release
 ```
 
 The binary will be at `.build/release/LiveAudioServer`.
+
+### Rebuilding the vendored libmp3lame (maintainers)
+
+`Frameworks/Mp3Lame.xcframework` is checked into the repo and is the only
+form of libmp3lame the project consumes. If you need to bump the LAME version
+or reproduce the framework from source, run:
+
+```bash
+./scripts/build-mp3lame-xcframework.sh
+```
+
+The script downloads LAME 3.100, builds arm64 and x86_64 static slices,
+`lipo`s them into a universal `libmp3lame.a`, and packages the result as
+`Frameworks/Mp3Lame.xcframework` via `xcodebuild -create-xcframework`. Only
+re-run when changing the LAME version — day-to-day development does not need
+to touch it.
 
 Optionally install system-wide:
 
@@ -137,6 +204,37 @@ dsward2/tap/liveaudioserver` work for users, you need a *tap repository*:
 6. Users can now `brew install dsward2/tap/liveaudioserver`.
 
 Subsequent releases: bump the tag, recompute SHA256, update the tap formula.
+
+### Cutting a signed, notarized release
+
+[`scripts/release.sh`](scripts/release.sh) builds a universal binary, signs
+it with a Developer ID, submits it to Apple's notary service, staples the
+ticket, and packages the result as a zip ready to upload to a GitHub
+release. The zip contains the binary, the double-click launcher, the
+license, and the third-party license disclosure.
+
+One-time setup on your release machine:
+
+```bash
+# Store notarization credentials in the keychain (uses an app-specific
+# password generated at https://appleid.apple.com).
+xcrun notarytool store-credentials LiveAudioServer-notary \
+    --apple-id you@example.com \
+    --team-id  TEAMIDXXXX \
+    --password APP-SPECIFIC-PASSWORD
+```
+
+Per-release:
+
+```bash
+export DEVELOPER_ID='Developer ID Application: Douglas Ward (XXXXXXXXXX)'
+export NOTARY_PROFILE='LiveAudioServer-notary'
+./scripts/release.sh
+```
+
+Output is written to
+`build/release/LiveAudioServer-vX.Y.Z-macos-universal.zip` along with its
+SHA256.
 
 ### Tests
 
@@ -214,7 +312,20 @@ Options:
   --config <path>           Read defaults from a JSON config file. Any CLI
                             flag passed alongside it overrides the file's
                             value. See "Configuration file" below.
-  --keep-alive              Keep HTTP outputs available after stdin reaches EOF
+  --keep-alive              Keep HTTP outputs available after stdin reaches EOF.
+                            If stdin is a FIFO (mkfifo), the reader also
+                            re-opens it on EOF so a new producer can attach;
+                            gaps between producers are filled with silence so
+                            encoders / HLS stay live.
+  --no-fifo-reopen          Disable the FIFO re-open behaviour above; the
+                            reader will silence-fill after EOF instead.
+  --silence-dither          Inject inaudible TPDF dither (±1 LSB) once a run
+                            of digitally-silent samples crosses
+                            --silence-dither-ms. Applies to stdin, UDP, and
+                            TCP input alike. Prevents downstream tools from
+                            treating the stream as dead.
+  --silence-dither-ms <n>   Milliseconds of pure-silence before dither kicks
+                            in (default: 500).
   -V, --verbose             Verbose logging
   -v, --version             Print version string and exit
   -h, --help                Show this help
@@ -635,7 +746,7 @@ paths and version. `path=/` is the conventional Safari Bonjour-bookmark key;
 `status=/` is the same path under an explicit name for non-Safari clients:
 
 ```
-ver=0.1.0
+ver=0.1.1
 path=/
 status=/
 mp3=/stream.mp3
@@ -648,7 +759,7 @@ details, so a LiveAudioServer-aware client can enumerate all streams in a
 single Bonjour lookup without hitting `/status.json`:
 
 ```
-ver=0.1.0
+ver=0.1.1
 path=/
 status=/
 rate=48000
@@ -709,6 +820,9 @@ Example `server.json`:
   "mountHLS": "/hls/index.m3u8",
   "chunkFrames": 4096,
   "keepAlive": false,
+  "reopenFIFO": true,
+  "silenceDither": false,
+  "silenceDitherMs": 500,
   "verbose": false,
   "authUser": "alice",
   "authPassword": "s3cret",
@@ -744,25 +858,25 @@ The server reads raw **little-endian signed 16-bit PCM** from stdin, UDP, or TCP
 
 This is what `ffmpeg -f s16le` produces, which is the standard raw PCM format.
 
+### Stream robustness
+
+Three options help the stream survive upstream hiccups:
+
+- **`--keep-alive`** — after stdin EOF, hold the HTTP outputs open and feed
+  the encoders silence (paced at sample-rate) so listeners aren't disconnected.
+- **FIFO re-open** — if stdin is a named pipe (`mkfifo`), the reader
+  re-`open()`s it on EOF so a new producer can attach mid-stream. Disable
+  with `--no-fifo-reopen`. Anonymous shell pipes can't be reopened and will
+  silence-fill instead.
+- **`--silence-dither`** — when the *signal itself* is digitally silent
+  (all-zero samples) for longer than `--silence-dither-ms` (default 500 ms),
+  the broadcaster substitutes inaudible TPDF dither (±1 LSB, ≈-90 dBFS), so
+  downstream tools that flag pure-silence don't treat the stream as dead.
+  Applies equally to stdin, UDP, and TCP input.
+
 ---
 
 ## Troubleshooting
-
-### `pkg-config --libs mp3lame` fails
-
-LAME isn't installed or pkg-config can't find it:
-
-```bash
-brew install lame
-# On Apple Silicon, add to your shell profile:
-export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:$PKG_CONFIG_PATH"
-
-# Or with MacPorts:
-sudo port install lame pkgconfig
-export PKG_CONFIG_PATH="/opt/local/lib/pkgconfig:$PKG_CONFIG_PATH"
-export CPATH="/opt/local/include:$CPATH"
-export LIBRARY_PATH="/opt/local/lib:$LIBRARY_PATH"
-```
 
 ### Browser plays MP3 but not M4A (or vice versa)
 
@@ -796,11 +910,15 @@ Lower values reduce latency but increase CPU overhead. For broadcast use, 4096 i
 ```
 LiveAudioServer/
 ├── Package.swift                         # SPM manifest
+├── Frameworks/
+│   └── Mp3Lame.xcframework               # Vendored universal libmp3lame static lib
+├── scripts/
+│   ├── build-mp3lame-xcframework.sh      # Rebuilds Mp3Lame.xcframework from source
+│   ├── release.sh                        # Universal build + sign + notarize + zip
+│   └── templates/
+│       └── Start LiveAudioServer.command # Double-click launcher bundled in release zips
+├── THIRD-PARTY-LICENSES.md               # LGPL compliance for bundled libmp3lame
 ├── Sources/
-│   ├── CLame/
-│   │   ├── include/
-│   │   │   └── lame_shim.h               # Header shim for Homebrew/MacPorts installs
-│   │   └── module.modulemap              # Exposes libmp3lame to SwiftPM
 │   └── LiveAudioServer/
 │       ├── main.swift                    # Entry point, arg parsing, pipeline wiring
 │       ├── Config.swift                  # ServerConfig, shared types

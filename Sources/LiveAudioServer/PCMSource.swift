@@ -49,6 +49,47 @@ final class PCMBroadcaster {
     }
 }
 
+// MARK: - TPDF Dither
+
+/// Triangular probability density function (TPDF) dither generator for 16-bit
+/// PCM. TPDF dither is the textbook way to mask the "all zeros" pattern that
+/// digital silence produces, without becoming audible:
+///
+///   • Two independent uniform random numbers in [-0.5, +0.5] are summed.
+///   • The sum has a triangular PDF over [-1.0, +1.0] LSB.
+///   • This decorrelates the noise from the signal (unlike pure rectangular
+///     dither) and yields a flat, neutral hiss instead of a tonal artifact.
+///
+/// At ±1 LSB peak the resulting noise floor sits around -90 dBFS for 16-bit
+/// PCM — well below the threshold of audibility for any realistic listening
+/// environment, yet enough to make every emitted sample non-zero so the
+/// stream never looks digitally dead to downstream tools.
+struct TPDFDither {
+    private var state: UInt64
+
+    init(seed: UInt64 = 0x9E37_79B9_7F4A_7C15) {
+        // SplitMix64-style state — any non-zero seed is fine.
+        self.state = seed == 0 ? 0x9E37_79B9_7F4A_7C15 : seed
+    }
+
+    /// Returns the next TPDF-distributed integer noise sample in
+    /// {-1, 0, +1}. Internal RNG is a fast SplitMix64 — deterministic from
+    /// the seed, which keeps tests reproducible.
+    mutating func nextNoiseSample() -> Int16 {
+        let r1 = Double(splitMix64() >> 11) * (1.0 / Double(1 << 53)) - 0.5
+        let r2 = Double(splitMix64() >> 11) * (1.0 / Double(1 << 53)) - 0.5
+        return Int16((r1 + r2).rounded())  // [-1.0, +1.0] → {-1, 0, +1}
+    }
+
+    private mutating func splitMix64() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
+    }
+}
+
 // MARK: - PCM Reader
 
 /// Continuously reads raw 16-bit little-endian interleaved PCM from stdin, UDP,
@@ -57,8 +98,16 @@ final class PCMReader {
     private let config: ServerConfig
     private let broadcaster: PCMBroadcaster
     private var isRunning = false
+    /// Set by `stop()` to break out of every loop unconditionally. Distinct
+    /// from `isRunning` so we can tell "natural EOF" (isRunning flipped by
+    /// the read loop) apart from "user asked us to quit".
+    private var shutdownRequested = false
     private var inputSocketFD: Int32 = -1
     private var listenSocketFD: Int32 = -1
+    private var dither = TPDFDither()
+    /// Counter of consecutive all-zero samples observed in the broadcast
+    /// stream. Reset to zero whenever any non-zero sample is encountered.
+    private var consecutiveZeroSamples: Int = 0
 
     init(config: ServerConfig, broadcaster: PCMBroadcaster) {
         self.config = config
@@ -73,7 +122,7 @@ final class PCMReader {
 
         switch config.inputSource {
         case .stdin:
-            runFromFileDescriptor(FileHandle.standardInput.fileDescriptor, eofLabel: "stdin EOF")
+            runStdin()
         case .udp(let port):
             runUDP(port: port)
         case .tcp(let port):
@@ -85,7 +134,92 @@ final class PCMReader {
         broadcaster.broadcast(UnsafeBufferPointer(start: nil, count: 0))
     }
 
+    /// Drive the stdin input. Reads until EOF; if `--keep-alive` is on we
+    /// either (a) re-open the underlying FIFO so a new producer can attach,
+    /// or (b) generate silence at chunk cadence so encoders / HLS keep
+    /// producing output until `stop()` is called. Plain pipes (shell `|`) are
+    /// not reopenable; only true FIFOs (made with `mkfifo`) qualify.
+    private func runStdin() {
+        let stdinFD = FileHandle.standardInput.fileDescriptor
+        let isFIFO = fileDescriptorIsFIFO(stdinFD)
+        let fifoPath = isFIFO ? resolveFIFOPath(forFD: stdinFD) : nil
+
+        runFromFileDescriptor(stdinFD, eofLabel: "stdin EOF")
+
+        guard config.keepAliveOnInputEnd else { return }
+
+        // After EOF: hold the broadcast open until stop() is called. If
+        // stdin was a real FIFO we try to reopen it each time a producer
+        // disconnects, falling back to silence-fill between attaches.
+        while !shutdownRequested {
+            if let path = fifoPath, config.reopenStdinFIFO {
+                log("stdin FIFO closed — reopening \(path) for next producer")
+                let newFD = open(path, O_RDONLY)
+                if newFD >= 0 {
+                    isRunning = true
+                    runFromFileDescriptor(newFD, eofLabel: "stdin FIFO EOF")
+                    close(newFD)
+                    continue
+                }
+                log("Reopen failed (\(String(cString: strerror(errno)))) — falling back to silence-fill")
+            }
+
+            log("Holding stream open with silence-fill until stop")
+            isRunning = true
+            runSilenceFill()
+            // After silence-fill returns, fall through to the next loop
+            // iteration. If stdin is a FIFO and reopen is allowed, the next
+            // pass will try to reattach; otherwise we'll silence-fill again.
+        }
+    }
+
+    /// Returns true if the given file descriptor refers to a FIFO (named
+    /// pipe). Plain pipes from a shell `|` are *also* FIFOs from the kernel's
+    /// perspective but they have no path on disk, so `resolveFIFOPath` will
+    /// return nil for them.
+    private func fileDescriptorIsFIFO(_ fd: Int32) -> Bool {
+        var st = stat()
+        guard fstat(fd, &st) == 0 else { return false }
+        return (st.st_mode & S_IFMT) == S_IFIFO
+    }
+
+    /// Try to recover the on-disk path of a FIFO via `F_GETPATH`. Returns nil
+    /// if the FIFO has no path (i.e. is an anonymous shell pipe) or the
+    /// fcntl fails.
+    private func resolveFIFOPath(forFD fd: Int32) -> String? {
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        let result = buffer.withUnsafeMutableBufferPointer { ptr -> Int32 in
+            guard let base = ptr.baseAddress else { return -1 }
+            return fcntl(fd, F_GETPATH, base)
+        }
+        guard result == 0 else { return nil }
+        let path = String(cString: buffer)
+        // Anonymous pipes resolve to paths like "pipe:[12345]" or fail.
+        if path.isEmpty || path.hasPrefix("pipe:") { return nil }
+        return path
+    }
+
+    /// Generate silent (or TPDF-dithered, when enabled) PCM at the same
+    /// cadence as a real input would, so encoders see a continuous stream.
+    /// Returns when `shutdownRequested` flips true.
+    private func runSilenceFill() {
+        let chunkBytes = config.stdinChunkBytes
+        let silenceBuf = [UInt8](repeating: 0, count: chunkBytes)
+        // Inter-chunk delay = chunkFrames / sampleRate seconds, converted to
+        // microseconds for usleep. Sleeping for exactly one chunk's duration
+        // keeps the broadcast paced like live input.
+        let chunkPeriodUSec = UInt32(
+            (Double(config.stdinChunkFrames) / Double(config.sampleRate)) * 1_000_000
+        )
+
+        while !shutdownRequested {
+            broadcastPCMBytes(silenceBuf)
+            usleep(chunkPeriodUSec)
+        }
+    }
+
     func stop() {
+        shutdownRequested = true
         isRunning = false
         if inputSocketFD >= 0 { close(inputSocketFD); inputSocketFD = -1 }
         if listenSocketFD >= 0 { close(listenSocketFD); listenSocketFD = -1 }
@@ -260,9 +394,32 @@ final class PCMReader {
     private func broadcastPCMBytes(_ bytes: [UInt8]) {
         let sampleCount = bytes.count / 2
         guard sampleCount > 0 else { return }
-        bytes.withUnsafeBytes { rawPtr in
-            let samples = rawPtr.bindMemory(to: Int16.self)
-            broadcaster.broadcast(UnsafeBufferPointer(start: samples.baseAddress, count: sampleCount))
+        var mutable = bytes
+        mutable.withUnsafeMutableBytes { rawPtr in
+            guard let base = rawPtr.bindMemory(to: Int16.self).baseAddress else { return }
+            let buffer = UnsafeMutableBufferPointer(start: base, count: sampleCount)
+            applyDitherIfSilent(buffer)
+            broadcaster.broadcast(UnsafeBufferPointer(buffer))
+        }
+    }
+
+    /// If `silenceDitherEnabled` is on, count consecutive zero samples and —
+    /// once the threshold is crossed — replace each subsequent zero with a
+    /// ±1 LSB TPDF dither sample so the broadcast signal is no longer
+    /// digitally silent. Non-zero samples reset the counter so real audio
+    /// passes through untouched.
+    private func applyDitherIfSilent(_ buffer: UnsafeMutableBufferPointer<Int16>) {
+        guard config.silenceDitherEnabled else { return }
+        let threshold = config.silenceDitherThresholdSamples
+        for i in 0..<buffer.count {
+            if buffer[i] == 0 {
+                consecutiveZeroSamples &+= 1
+                if consecutiveZeroSamples > threshold {
+                    buffer[i] = dither.nextNoiseSample()
+                }
+            } else {
+                consecutiveZeroSamples = 0
+            }
         }
     }
 }

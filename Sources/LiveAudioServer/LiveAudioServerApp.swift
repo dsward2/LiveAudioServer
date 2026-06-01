@@ -114,7 +114,20 @@ func printUsage() {
       --config <path>           Read defaults from a JSON config file. Any CLI
                                 flag passed alongside it overrides the file's
                                 value. See the README for the full schema.
-      --keep-alive              Keep HTTP outputs available after stdin reaches EOF
+      --keep-alive              Keep HTTP outputs available after stdin reaches EOF.
+                                If stdin is a FIFO (created with mkfifo), the
+                                reader also re-opens it on EOF so a new
+                                producer can attach; gaps between producers
+                                are filled with silence so encoders / HLS
+                                stay live.
+      --no-fifo-reopen          Disable the FIFO re-open behaviour above; the
+                                reader will silence-fill after EOF instead.
+      --silence-dither          Inject inaudible TPDF dither (±1 LSB) once a
+                                run of digitally-silent samples crosses
+                                --silence-dither-ms. Prevents downstream
+                                tools from treating the stream as dead.
+      --silence-dither-ms <n>   Milliseconds of pure-silence before dither
+                                kicks in (default: 500).
       -V, --verbose             Verbose logging
       -v, --version             Print version string and exit
       -h, --help                Show this help
@@ -191,6 +204,10 @@ func extractConfigPath(_ args: [String]) -> (path: String?, remaining: [String])
 /// server.
 func parseCLI(_ args: [String]) -> CLIParseResult {
     var config = ServerConfig()
+    // Deferred: --silence-dither-ms must be applied after --rate / --channels
+    // so the sample-rate conversion uses the final values regardless of flag
+    // order. nil = use the default threshold from ServerConfig.
+    var silenceDitherMs: Int? = nil
 
     // Pre-pass: load a config file if `--config <path>` was supplied. The
     // file populates the starting config; CLI flags processed below override.
@@ -364,6 +381,16 @@ func parseCLI(_ args: [String]) -> CLIParseResult {
             config.httpAuthRealm = r
         case "--keep-alive":
             config.keepAliveOnInputEnd = true
+        case "--no-fifo-reopen":
+            config.reopenStdinFIFO = false
+        case "--silence-dither":
+            config.silenceDitherEnabled = true
+        case "--silence-dither-ms":
+            i += 1
+            guard i < args.count, let ms = Int(args[i]), ms >= 0 else {
+                return .error("Bad --silence-dither-ms (must be a non-negative integer)")
+            }
+            silenceDitherMs = ms
         case "-V", "--verbose":
             config.verbose = true
         case "-v", "--version":
@@ -374,6 +401,12 @@ func parseCLI(_ args: [String]) -> CLIParseResult {
             return .error("Unknown option: \(args[i])")
         }
         i += 1
+    }
+
+    // Apply deferred dither threshold once sample rate / channels are final.
+    if let ms = silenceDitherMs {
+        // Threshold counts individual Int16 samples across all channels.
+        config.silenceDitherThresholdSamples = (ms * config.sampleRate * config.channels) / 1000
     }
 
     // Cross-flag validation.

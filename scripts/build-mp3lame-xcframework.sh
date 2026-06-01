@@ -55,42 +55,64 @@ SRC="${BUILD_ROOT}/lame-${LAME_VERSION}"
 # Reference: https://sourceforge.net/p/lame/mailman/lame-dev/thread/...
 sed -i.bak '/lame_init_old/d' "${SRC}/include/libmp3lame.sym"
 
+HOST_ARCH="$(uname -m)"      # arm64 on Apple Silicon, x86_64 on Intel
+SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
+CC="$(xcrun -find clang)"
+
 build_one_arch() {
     local arch="$1"
-    local host="$2"
     local stage="${BUILD_ROOT}/stage-${arch}"
     echo "[*] Configuring + building libmp3lame for ${arch}"
     rm -rf "${stage}"
     mkdir -p "${stage}"
+
+    # When the slice arch matches the host arch we let autotools run in native
+    # mode (no --host=); otherwise we cross-compile and pre-seed any test
+    # results that would require running the produced binary.
+    local host_arg=()
+    local cross_env=()
+    if [[ "${arch}" != "${HOST_ARCH}" ]]; then
+        host_arg=("--host=${arch}-apple-darwin")
+        # LAME's configure runs a couple of "does this work at runtime" probes
+        # that obviously can't execute when cross-compiling. Provide sane
+        # defaults so configure doesn't bail.
+        cross_env=(ac_cv_func_malloc_0_nonnull=yes ac_cv_func_realloc_0_nonnull=yes)
+    fi
+
+    # LAME 3.100 predates clang 16+'s default of treating implicit function
+    # declarations as errors. The -Wno-* flags keep that legacy code compiling
+    # under modern Xcode without touching the upstream sources.
+    local cflags="-arch ${arch} -isysroot ${SDK_PATH} -mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET} -O2 -fPIC -Wno-implicit-function-declaration -Wno-implicit-int"
+    local ldflags="-arch ${arch} -isysroot ${SDK_PATH} -mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET}"
+
     (
         cd "${SRC}"
         make distclean >/dev/null 2>&1 || true
-        CC="$(xcrun -find clang)"
-        CFLAGS="-arch ${arch} -mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET} -O2 -fPIC"
-        LDFLAGS="-arch ${arch} -mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET}"
-        ./configure \
-            --host="${host}" \
-            --prefix="${stage}" \
-            --disable-shared \
-            --enable-static \
-            --disable-frontend \
-            --disable-decoder \
-            --disable-analyzer-hooks \
-            --disable-gtktest \
-            CC="${CC}" \
-            CFLAGS="${CFLAGS}" \
-            LDFLAGS="${LDFLAGS}" \
-            >/dev/null
+        # Use `+ "..."` parameter expansion so empty arrays don't trip `set -u`.
+        env ${cross_env[@]+"${cross_env[@]}"} \
+            ./configure \
+                ${host_arg[@]+"${host_arg[@]}"} \
+                --prefix="${stage}" \
+                --disable-shared \
+                --enable-static \
+                --disable-frontend \
+                --disable-decoder \
+                --disable-analyzer-hooks \
+                --disable-gtktest \
+                CC="${CC}" \
+                CFLAGS="${cflags}" \
+                LDFLAGS="${ldflags}" \
+                >/dev/null
         make -j"$(sysctl -n hw.ncpu)" >/dev/null
         make install >/dev/null
     )
 }
 
 echo "[3/7] Building arm64 slice"
-build_one_arch arm64  aarch64-apple-darwin
+build_one_arch arm64
 
 echo "[4/7] Building x86_64 slice"
-build_one_arch x86_64 x86_64-apple-darwin
+build_one_arch x86_64
 
 echo "[5/7] lipo-ing universal libmp3lame.a"
 UNI_DIR="${BUILD_ROOT}/universal"

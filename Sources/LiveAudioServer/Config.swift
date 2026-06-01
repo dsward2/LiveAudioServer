@@ -59,6 +59,19 @@ struct ServerConfig {
     var verbose: Bool = false
     var stdinChunkFrames: Int = 4096  // PCM frames read per stdin iteration
     var keepAliveOnInputEnd: Bool = false
+    /// When the input stream is a FIFO/named pipe and `keepAliveOnInputEnd` is
+    /// on, re-`open()` the same path on EOF so a new producer can attach.
+    /// Plain pipes (e.g. shell `|`) cannot be reopened — this only takes
+    /// effect when stdin is in fact a FIFO.
+    var reopenStdinFIFO: Bool = true
+    /// Inject inaudible TPDF dither into the broadcast PCM stream when a long
+    /// run of all-zero (digitally silent) samples is detected. Prevents
+    /// downstream tools from seeing the stream as "dead" while keeping the
+    /// added noise below the threshold of audibility.
+    var silenceDitherEnabled: Bool = false
+    /// Number of consecutive all-zero samples (per channel, summed) that must
+    /// elapse before dither kicks in. Default ~500 ms at 48 kHz stereo.
+    var silenceDitherThresholdSamples: Int = 48_000
     var inputSource: PCMInputSource = .stdin
     var mountMP3: String = "/stream.mp3"
     var mountM4A: String = "/stream.m4a"
