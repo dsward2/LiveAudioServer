@@ -128,6 +128,21 @@ func printUsage() {
                                 tools from treating the stream as dead.
       --silence-dither-ms <n>   Milliseconds of pure-silence before dither
                                 kicks in (default: 500).
+      --filler-mode <mode>      What to broadcast during the keep-alive
+                                silence-fill window after stdin EOF.
+                                "silence" (default) emits digital zero
+                                (optionally TPDF-dithered via
+                                --silence-dither). "tone" emits a continuous
+                                sine wave at --filler-tone-hz so listeners
+                                hear an audible "dead-air" placeholder.
+                                Only effective with --keep-alive.
+      --filler-tone-hz <hz>     Frequency of the sine-tone filler in Hz
+                                (default: 1000). Ignored unless
+                                --filler-mode tone.
+      --filler-after-ms <n>     Milliseconds of consecutive UDP/TCP input
+                                absence before the filler kicks in (default:
+                                500). Brief network jitter passes through
+                                unaltered; longer gaps switch to filler.
       -V, --verbose             Verbose logging
       -v, --version             Print version string and exit
       -h, --help                Show this help
@@ -391,6 +406,25 @@ func parseCLI(_ args: [String]) -> CLIParseResult {
                 return .error("Bad --silence-dither-ms (must be a non-negative integer)")
             }
             silenceDitherMs = ms
+        case "--filler-mode":
+            i += 1
+            guard i < args.count else { return .error("Missing --filler-mode value (silence|tone)") }
+            guard let mode = FillerMode(cliArgument: args[i]) else {
+                return .error("Bad --filler-mode '\(args[i])' (must be 'silence' or 'tone')")
+            }
+            config.fillerMode = mode
+        case "--filler-tone-hz":
+            i += 1
+            guard i < args.count, let v = Double(args[i]), v > 0, v < Double(config.sampleRate) / 2.0 else {
+                return .error("Bad --filler-tone-hz (must be > 0 and below the Nyquist frequency)")
+            }
+            config.fillerToneHz = v
+        case "--filler-after-ms":
+            i += 1
+            guard i < args.count, let v = Int(args[i]), v >= 0 else {
+                return .error("Bad --filler-after-ms (must be a non-negative integer)")
+            }
+            config.fillerAfterMs = v
         case "-V", "--verbose":
             config.verbose = true
         case "-v", "--version":

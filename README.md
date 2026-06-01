@@ -326,6 +326,20 @@ Options:
                             treating the stream as dead.
   --silence-dither-ms <n>   Milliseconds of pure-silence before dither kicks
                             in (default: 500).
+  --filler-mode <mode>      What to broadcast during the keep-alive
+                            silence-fill window after stdin EOF.
+                            "silence" (default) emits digital zero
+                            (optionally TPDF-dithered via --silence-dither).
+                            "tone" emits a continuous sine wave at
+                            --filler-tone-hz so listeners hear an audible
+                            "dead-air" placeholder. Only effective with
+                            --keep-alive.
+  --filler-tone-hz <hz>     Frequency of the sine-tone filler in Hz
+                            (default: 1000). Ignored unless --filler-mode tone.
+  --filler-after-ms <n>     Milliseconds of consecutive UDP/TCP input absence
+                            before the filler kicks in (default: 500). Brief
+                            network jitter passes through unaltered; longer
+                            gaps switch to filler.
   -V, --verbose             Verbose logging
   -v, --version             Print version string and exit
   -h, --help                Show this help
@@ -381,13 +395,42 @@ ffmpeg -f avfoundation -i "VB-Cable" \
 
 ### Gqrx UDP audio feed
 
+**Configure Gqrx first.** In Gqrx, click the **UDP** button in the *Audio*
+section. In *Audio Options → Network*, set **UDP host** to `localhost`,
+**UDP port** to `7355`, and tick the **Stereo** checkbox. (Gqrx will start
+streaming as soon as LiveAudioServer is listening on that port.)
+
+Then start LiveAudioServer:
+
 ```bash
-# Gqrx commonly sends 16-bit stereo PCM to UDP port 7355.
-# This example assumes Gqrx UDP output is configured for 2-channel stereo.
-ffmpeg -f s16le -ar 48000 -ac 2 -i "udp://localhost:7355?listen" \
-       -f s16le -ar 48000 -ac 2 - \
-  | .build/release/LiveAudioServer --rate 48000 --channels 2
+# Gqrx sends 48 kHz 16-bit stereo PCM to UDP port 7355 by default — read it
+# directly without any external resampler. Basic-auth gates the HTTP routes,
+# --silence-dither keeps downstream tools alive between transmissions, and
+# --keep-alive holds the stream open across gaps in the upstream feed.
+.build/release/LiveAudioServer \
+    --udp-input-port 7355 \
+    --auth-user alice \
+    --auth-password s3cret \
+    --silence-dither \
+    --keep-alive
 ```
+
+A few notes about this example:
+
+- **Don't put the password on the command line in production** — it shows up
+  in `ps` output and shell history. Use `--auth-password-env` instead:
+  ```bash
+  export LIVEAUDIO_AUTH_PW=s3cret
+  .build/release/LiveAudioServer --udp-input-port 7355 \
+      --auth-user alice --auth-password-env LIVEAUDIO_AUTH_PW \
+      --silence-dither --keep-alive
+  ```
+- Basic auth gates **every** HTTP route, including the status page at `/`.
+  The first time you open `http://<mac>.local:8080/` on iPhone Safari you'll
+  see a credential dialog — enter `alice` / `s3cret` (Safari can remember
+  them in the keychain).
+- For anything beyond loopback, pair Basic auth with `--tls-port` so
+  credentials don't ride in plaintext on the LAN (see "Native HTTPS" below).
 
 ### RTL-SDR via `rtl_fm` (mono)
 
@@ -746,7 +789,7 @@ paths and version. `path=/` is the conventional Safari Bonjour-bookmark key;
 `status=/` is the same path under an explicit name for non-Safari clients:
 
 ```
-ver=0.1.1
+ver=0.1.2
 path=/
 status=/
 mp3=/stream.mp3
@@ -759,7 +802,7 @@ details, so a LiveAudioServer-aware client can enumerate all streams in a
 single Bonjour lookup without hitting `/status.json`:
 
 ```
-ver=0.1.1
+ver=0.1.2
 path=/
 status=/
 rate=48000
@@ -823,6 +866,9 @@ Example `server.json`:
   "reopenFIFO": true,
   "silenceDither": false,
   "silenceDitherMs": 500,
+  "fillerMode": "silence",
+  "fillerToneHz": 1000,
+  "fillerAfterMs": 500,
   "verbose": false,
   "authUser": "alice",
   "authPassword": "s3cret",
@@ -860,7 +906,7 @@ This is what `ffmpeg -f s16le` produces, which is the standard raw PCM format.
 
 ### Stream robustness
 
-Three options help the stream survive upstream hiccups:
+Four options help the stream survive upstream hiccups:
 
 - **`--keep-alive`** — after stdin EOF, hold the HTTP outputs open and feed
   the encoders silence (paced at sample-rate) so listeners aren't disconnected.
@@ -873,6 +919,27 @@ Three options help the stream survive upstream hiccups:
   the broadcaster substitutes inaudible TPDF dither (±1 LSB, ≈-90 dBFS), so
   downstream tools that flag pure-silence don't treat the stream as dead.
   Applies equally to stdin, UDP, and TCP input.
+- **`--filler-mode tone`** — replaces the silence emitted during input gaps
+  with an audible sine wave at `--filler-tone-hz` (default 1000 Hz, -20 dBFS).
+  Useful when listeners need a positive signal that the stream is up but the
+  producer is between sources, rather than just hearing dead air. The phase
+  accumulator carries across chunks so the tone has no audible clicks at
+  chunk boundaries.
+
+  Triggers in three scenarios:
+  - **stdin EOF + `--keep-alive`** (legacy behavior).
+  - **UDP input idle**: no packets for `--filler-after-ms` (default 500 ms).
+  - **TCP input idle**: connected client stops sending for `--filler-after-ms`.
+
+  ```bash
+  # Gqrx → LiveAudioServer; if you mute Gqrx's UDP output, listeners hear a
+  # 1 kHz tone after 500 ms instead of dead air, until Gqrx resumes.
+  .build/release/LiveAudioServer \
+      --udp-input-port 7355 \
+      --filler-mode tone \
+      --filler-tone-hz 1000 \
+      --keep-alive
+  ```
 
 ---
 

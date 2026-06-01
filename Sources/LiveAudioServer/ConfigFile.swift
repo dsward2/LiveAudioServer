@@ -25,6 +25,7 @@ enum ConfigFileError: Error, CustomStringConvertible {
     case fileNotReadable(String)
     case decodeFailed(String, message: String)
     case invalidOutputs(String)
+    case invalidFillerMode(String)
 
     var description: String {
         switch self {
@@ -34,6 +35,8 @@ enum ConfigFileError: Error, CustomStringConvertible {
             return "Config file at \(p) is not valid JSON: \(m)"
         case .invalidOutputs(let token):
             return "Invalid value in config 'outputs': '\(token)'. Valid: mp3, aac, hls"
+        case .invalidFillerMode(let token):
+            return "Invalid value in config 'fillerMode': '\(token)'. Valid: silence, tone"
         }
     }
 }
@@ -64,6 +67,9 @@ struct ServerConfigFile: Codable {
     var reopenFIFO: Bool?
     var silenceDither: Bool?
     var silenceDitherMs: Int?
+    var fillerMode: String?       // "silence" | "tone"
+    var fillerToneHz: Double?
+    var fillerAfterMs: Int?
     var verbose: Bool?
     var bonjour: String?
     var bonjourInputs: Bool?
@@ -113,6 +119,14 @@ func applyConfigFile(_ file: ServerConfigFile, to config: inout ServerConfig) th
         // case via --silence-dither-ms.
         config.silenceDitherThresholdSamples = (v * config.sampleRate * config.channels) / 1000
     }
+    if let v = file.fillerMode {
+        guard let mode = FillerMode(cliArgument: v) else {
+            throw ConfigFileError.invalidFillerMode(v)
+        }
+        config.fillerMode = mode
+    }
+    if let v = file.fillerToneHz { config.fillerToneHz = v }
+    if let v = file.fillerAfterMs { config.fillerAfterMs = v }
     if let v = file.verbose       { config.verbose = v }
     if let v = file.bonjour       { config.bonjourName = v.isEmpty ? nil : v }
     if let v = file.bonjourInputs { config.bonjourAdvertiseInputs = v }

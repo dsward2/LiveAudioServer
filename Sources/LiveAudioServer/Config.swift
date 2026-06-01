@@ -72,6 +72,21 @@ struct ServerConfig {
     /// Number of consecutive all-zero samples (per channel, summed) that must
     /// elapse before dither kicks in. Default ~500 ms at 48 kHz stereo.
     var silenceDitherThresholdSamples: Int = 48_000
+    /// What the reader broadcasts during the keep-alive silence-fill window
+    /// after stdin reaches EOF. Default `.silence` preserves the historical
+    /// behavior (zero bytes, optionally TPDF-dithered). `.tone` substitutes a
+    /// continuous sine wave so listeners hear an audible "test tone" placeholder
+    /// instead of dead air.
+    var fillerMode: FillerMode = .silence
+    /// Frequency in Hz of the sine wave emitted when `fillerMode == .tone`.
+    /// Ignored otherwise. Default 1000 Hz is the broadcast convention for a
+    /// reference test tone.
+    var fillerToneHz: Double = 1000.0
+    /// Milliseconds of consecutive UDP/TCP input absence before the filler
+    /// kicks in. Lets brief network jitter pass through unaltered while still
+    /// covering longer gaps (Gqrx paused, station between feeds, etc.).
+    /// Default 500 ms matches the silence-dither threshold.
+    var fillerAfterMs: Int = 500
     var inputSource: PCMInputSource = .stdin
     var mountMP3: String = "/stream.mp3"
     var mountM4A: String = "/stream.m4a"
@@ -123,6 +138,24 @@ struct ServerConfig {
 
     /// Bytes per stdin read
     var stdinChunkBytes: Int { stdinChunkFrames * bytesPerFrame }
+}
+
+// MARK: - Filler Mode
+
+/// Content the silence-fill loop emits when input has ended (stdin EOF + `--keep-alive`).
+enum FillerMode: String {
+    /// Continue the historical behavior: emit all-zero PCM (optionally TPDF-dithered).
+    case silence
+    /// Emit a continuous sine wave so listeners hear an audible placeholder.
+    case tone
+
+    init?(cliArgument: String) {
+        switch cliArgument.lowercased() {
+        case "silence":                    self = .silence
+        case "tone", "sine", "sine-tone":  self = .tone
+        default:                           return nil
+        }
+    }
 }
 
 // MARK: - Encoded Chunk

@@ -90,6 +90,67 @@ struct TPDFDither {
     }
 }
 
+// MARK: - Filler Generator
+
+/// Generates the PCM that the reader broadcasts during silence-fill — either
+/// digital zero (silence) or a continuous sine wave (tone). The generator
+/// owns its phase accumulator so successive chunks join without clicks.
+struct FillerGenerator {
+    /// Default tone amplitude: -20 dBFS. That's the BBC/EBU reference for a
+    /// broadcast test tone — clearly audible without being painful. Kept fixed
+    /// for the first cut; can be exposed as a CLI knob later if anyone asks.
+    static let toneAmplitudePeakI16: Int32 = 3277   // round(32767 × 10^(-20/20))
+
+    let mode: FillerMode
+    let channels: Int
+    let sampleRate: Int
+    let toneHz: Double
+
+    /// Radians per sample. Zero for `.silence`.
+    private let phaseIncrement: Double
+    /// Cumulative phase in radians, modulo 2π. Carried across chunks so the
+    /// sine is continuous and won't click at chunk boundaries.
+    private var phase: Double = 0
+
+    init(mode: FillerMode, channels: Int, sampleRate: Int, toneHz: Double) {
+        self.mode        = mode
+        self.channels    = channels
+        self.sampleRate  = sampleRate
+        self.toneHz      = toneHz
+        self.phaseIncrement = (mode == .tone)
+            ? (2.0 * .pi * toneHz / Double(sampleRate))
+            : 0.0
+    }
+
+    /// Write one chunk's worth of filler PCM into the caller's byte buffer
+    /// (interleaved 16-bit little-endian). The buffer length must be a
+    /// multiple of `bytesPerFrame`.
+    mutating func fillChunk(_ bytes: inout [UInt8]) {
+        switch mode {
+        case .silence:
+            // Zero-fill is the historical behavior. Cheaper than calling
+            // memset, but bytes is already zero on first fill — re-zero in
+            // case the caller reused a buffer.
+            for i in 0..<bytes.count { bytes[i] = 0 }
+        case .tone:
+            let bytesPerFrame = channels * 2
+            let frameCount    = bytes.count / bytesPerFrame
+            let amp           = Double(Self.toneAmplitudePeakI16)
+            bytes.withUnsafeMutableBytes { raw in
+                guard let base = raw.baseAddress?.assumingMemoryBound(to: Int16.self) else { return }
+                for f in 0..<frameCount {
+                    let sample = Int16(truncatingIfNeeded: Int32((sin(phase) * amp).rounded()))
+                    for ch in 0..<channels {
+                        base[f * channels + ch] = sample
+                    }
+                    phase += phaseIncrement
+                    if phase >= 2 * .pi { phase -= 2 * .pi }
+                }
+            }
+        }
+    }
+}
+
 // MARK: - PCM Reader
 
 /// Continuously reads raw 16-bit little-endian interleaved PCM from stdin, UDP,
@@ -199,12 +260,18 @@ final class PCMReader {
         return path
     }
 
-    /// Generate silent (or TPDF-dithered, when enabled) PCM at the same
-    /// cadence as a real input would, so encoders see a continuous stream.
+    /// Generate filler PCM at the same cadence as a real input would, so
+    /// encoders see a continuous stream. Filler is either digital silence
+    /// (default, optionally TPDF-dithered downstream) or a continuous sine
+    /// wave when `--filler-mode tone` is configured.
     /// Returns when `shutdownRequested` flips true.
     private func runSilenceFill() {
         let chunkBytes = config.stdinChunkBytes
-        let silenceBuf = [UInt8](repeating: 0, count: chunkBytes)
+        var fillerBuf  = [UInt8](repeating: 0, count: chunkBytes)
+        var generator  = FillerGenerator(mode: config.fillerMode,
+                                         channels: config.channels,
+                                         sampleRate: config.sampleRate,
+                                         toneHz: config.fillerToneHz)
         // Inter-chunk delay = chunkFrames / sampleRate seconds, converted to
         // microseconds for usleep. Sleeping for exactly one chunk's duration
         // keeps the broadcast paced like live input.
@@ -212,8 +279,14 @@ final class PCMReader {
             (Double(config.stdinChunkFrames) / Double(config.sampleRate)) * 1_000_000
         )
 
+        if config.fillerMode == .tone {
+            log(String(format: "Filler: %.0f Hz sine tone at -20 dBFS until input resumes",
+                       config.fillerToneHz))
+        }
+
         while !shutdownRequested {
-            broadcastPCMBytes(silenceBuf)
+            generator.fillChunk(&fillerBuf)
+            broadcastPCMBytes(fillerBuf)
             usleep(chunkPeriodUSec)
         }
     }
@@ -288,10 +361,26 @@ final class PCMReader {
             return
         }
 
+        // SO_RCVTIMEO turns recv() into a polling call — it returns EAGAIN
+        // every chunk period when no packets arrive. We use that signal both
+        // for pacing the broadcast (so encoders see a continuous stream when
+        // the sender is idle) and to drive filler emission once the
+        // `fillerAfterMs` debounce window elapses.
+        applyChunkPeriodRecvTimeout(socketFD)
+
         log("Listening for UDP PCM on [::]:\(port) (IPv4 + IPv6)")
         let chunkBytes = config.stdinChunkBytes
         var readBuf = [UInt8](repeating: 0, count: max(chunkBytes, 65536))
         var pending = [UInt8]()
+
+        var fillerGen = FillerGenerator(mode: config.fillerMode,
+                                        channels: config.channels,
+                                        sampleRate: config.sampleRate,
+                                        toneHz: config.fillerToneHz)
+        var fillerBuf = [UInt8](repeating: 0, count: chunkBytes)
+        let timeoutsBeforeFiller = max(1, config.fillerAfterMs / chunkPeriodMs)
+        var consecutiveTimeouts = 0
+        var fillerActive = false
 
         while isRunning {
             var recvErrno: Int32 = 0
@@ -302,6 +391,19 @@ final class PCMReader {
                 return result
             }
             if n < 0 {
+                if recvErrno == EAGAIN || recvErrno == EWOULDBLOCK {
+                    // recv timeout — no UDP traffic this chunk period.
+                    consecutiveTimeouts += 1
+                    if consecutiveTimeouts >= timeoutsBeforeFiller {
+                        if !fillerActive {
+                            log("UDP input idle — emitting \(config.fillerMode) filler until traffic resumes")
+                            fillerActive = true
+                        }
+                        fillerGen.fillChunk(&fillerBuf)
+                        broadcastPCMBytes(fillerBuf)
+                    }
+                    continue
+                }
                 if recvErrno != EBADF {
                     log("UDP receive error: \(String(cString: strerror(recvErrno)))")
                 }
@@ -311,6 +413,91 @@ final class PCMReader {
             // keep waiting for more packets.
             if n == 0 { continue }
 
+            if fillerActive {
+                log("UDP input resumed — filler ended")
+                fillerActive = false
+                // Drop accumulated pending bytes from before the gap; they're
+                // stale and would inject a small time-warp into the live audio.
+                pending.removeAll(keepingCapacity: true)
+            }
+            consecutiveTimeouts = 0
+            pending.append(contentsOf: readBuf.prefix(n))
+            drainPendingPCM(&pending, chunkBytes: chunkBytes)
+        }
+    }
+
+    /// Chunk period in milliseconds, used both as the socket recv timeout and
+    /// as the unit for the filler-after-ms debounce.
+    private var chunkPeriodMs: Int {
+        max(1, (config.stdinChunkFrames * 1000) / config.sampleRate)
+    }
+
+    /// Configure SO_RCVTIMEO so `recv()` / `read()` on the given socket returns
+    /// EAGAIN every chunk period when no data is arriving.
+    private func applyChunkPeriodRecvTimeout(_ fd: Int32) {
+        var tv = timeval()
+        let totalUSec = chunkPeriodMs * 1000
+        tv.tv_sec  = __darwin_time_t(totalUSec / 1_000_000)
+        tv.tv_usec = __darwin_suseconds_t(totalUSec % 1_000_000)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv,
+                   socklen_t(MemoryLayout<timeval>.size))
+    }
+
+    /// Read-and-broadcast loop for a connected TCP client. Mirrors `runUDP`'s
+    /// SO_RCVTIMEO + debounce + filler pattern: when the client connects but
+    /// stops sending data for `fillerAfterMs`, switch to filler emission;
+    /// resume normal forwarding as soon as bytes arrive again.
+    private func runTCPClientLoop(_ fd: Int32) {
+        let chunkBytes = config.stdinChunkBytes
+        var readBuf    = [UInt8](repeating: 0, count: max(chunkBytes, 8192))
+        var pending    = [UInt8]()
+
+        var fillerGen = FillerGenerator(mode: config.fillerMode,
+                                        channels: config.channels,
+                                        sampleRate: config.sampleRate,
+                                        toneHz: config.fillerToneHz)
+        var fillerBuf = [UInt8](repeating: 0, count: chunkBytes)
+        let timeoutsBeforeFiller = max(1, config.fillerAfterMs / chunkPeriodMs)
+        var consecutiveTimeouts = 0
+        var fillerActive = false
+
+        while isRunning {
+            var readErrno: Int32 = 0
+            let n = readBuf.withUnsafeMutableBytes { rawBuffer -> Int in
+                guard let baseAddress = rawBuffer.baseAddress else { return -1 }
+                let result = read(fd, baseAddress, rawBuffer.count)
+                if result < 0 { readErrno = errno }
+                return result
+            }
+            if n == 0 {
+                log("TCP PCM client disconnected")
+                break
+            }
+            if n < 0 {
+                if readErrno == EAGAIN || readErrno == EWOULDBLOCK {
+                    consecutiveTimeouts += 1
+                    if consecutiveTimeouts >= timeoutsBeforeFiller {
+                        if !fillerActive {
+                            log("TCP input idle — emitting \(config.fillerMode) filler until traffic resumes")
+                            fillerActive = true
+                        }
+                        fillerGen.fillChunk(&fillerBuf)
+                        broadcastPCMBytes(fillerBuf)
+                    }
+                    continue
+                }
+                if readErrno != EBADF {
+                    log("TCP read error: \(String(cString: strerror(readErrno)))")
+                }
+                break
+            }
+
+            if fillerActive {
+                log("TCP input resumed — filler ended")
+                fillerActive = false
+                pending.removeAll(keepingCapacity: true)
+            }
+            consecutiveTimeouts = 0
             pending.append(contentsOf: readBuf.prefix(n))
             drainPendingPCM(&pending, chunkBytes: chunkBytes)
         }
@@ -371,7 +558,8 @@ final class PCMReader {
 
             inputSocketFD = clientFD
             log("TCP PCM client connected on port \(port)")
-            runFromFileDescriptor(clientFD, eofLabel: "TCP PCM client disconnected")
+            applyChunkPeriodRecvTimeout(clientFD)
+            runTCPClientLoop(clientFD)
             if clientFD >= 0 { close(clientFD) }
             inputSocketFD = -1
 
