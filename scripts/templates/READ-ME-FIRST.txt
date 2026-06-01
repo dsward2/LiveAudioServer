@@ -1,0 +1,53 @@
+LiveAudioServer — quick start
+=============================
+
+To start the server: double-click  "Start LiveAudioServer.command".
+
+----------------------------------------------------------------
+FIRST-TIME LAUNCH ONLY — Gatekeeper prompt
+----------------------------------------------------------------
+
+The first time you launch "Start LiveAudioServer.command" after
+downloading, macOS will say:
+
+    "Apple could not verify '...' is free of malware..."
+
+This is expected. macOS can't notarize shell scripts. The actual
+program (the liveaudioserver binary in this folder) IS Apple-notarized
+and is safe to run — only the launcher script triggers the warning.
+
+To get past the prompt one time:
+
+  macOS 13–14:
+    Right-click (or Control-click) "Start LiveAudioServer.command"
+    in Finder, choose Open, then click Open in the dialog.
+
+  macOS 15 Sequoia and later:
+    1. Double-click "Start LiveAudioServer.command" — it gets blocked.
+    2. Open System Settings -> Privacy & Security.
+    3. Scroll down; you'll see "...was blocked..." with an
+       "Open Anyway" button. Click it.
+    4. Confirm with password / Touch ID.
+
+After this one-time approval, you can just double-click the launcher
+from now on — no prompts.
+
+----------------------------------------------------------------
+Listening to the stream
+----------------------------------------------------------------
+
+Once the launcher window says it's running, on any device on the same
+Wi-Fi, open:
+
+    http://<your-mac-name>.local:8080/
+
+(The launcher prints the exact URL.)
+
+To stop: press Control-C in the launcher window, or close it.
+
+----------------------------------------------------------------
+More info
+----------------------------------------------------------------
+
+Full documentation:  https://github.com/dsward2/LiveAudioServer
+Report bugs:         https://github.com/dsward2/LiveAudioServer/issues

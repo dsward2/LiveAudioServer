@@ -23,21 +23,16 @@ class Liveaudioserver < Formula
   head "https://github.com/dsward2/LiveAudioServer.git", branch: "main"
 
   depends_on macos: :ventura
-  depends_on "lame"
 
   def install
     # --disable-sandbox is required for SwiftPM under Homebrew, which
     # otherwise can't fetch its own toolchain cache.
     #
-    # Pass -I/-L explicitly because Homebrew's lame keg does not ship a
-    # mp3lame.pc; the CLame system-library target's pkgConfig: "mp3lame"
-    # lookup therefore returns no flags and the lame_shim.h #include
-    # cascade fails to find <lame/lame.h>.
+    # libmp3lame is vendored as Frameworks/Mp3Lame.xcframework and consumed
+    # by SwiftPM as a binary target — no external `lame` dependency needed.
     system "swift", "build",
                     "--configuration", "release",
-                    "--disable-sandbox",
-                    "-Xcc", "-I#{Formula["lame"].opt_include}",
-                    "-Xlinker", "-L#{Formula["lame"].opt_lib}"
+                    "--disable-sandbox"
     bin.install ".build/release/LiveAudioServer" => "liveaudioserver"
   end
 

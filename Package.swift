@@ -10,20 +10,16 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-testing.git", from: "0.10.0")
     ],
     targets: [
-        .systemLibrary(
+        // Vendored libmp3lame as a universal (arm64 + x86_64) static
+        // XCFramework. Regenerate by running scripts/build-mp3lame-xcframework.sh.
+        .binaryTarget(
             name: "CLame",
-            pkgConfig: "mp3lame",
-            providers: [
-                .brew(["lame"])
-            ]
+            path: "Frameworks/Mp3Lame.xcframework"
         ),
         .executableTarget(
             name: "LiveAudioServer",
             dependencies: ["CLame"],
-            path: "Sources/LiveAudioServer",
-            linkerSettings: [
-                .linkedLibrary("mp3lame")
-            ]
+            path: "Sources/LiveAudioServer"
         ),
         .testTarget(
             name: "LiveAudioServerTests",
