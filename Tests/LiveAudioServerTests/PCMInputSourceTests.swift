@@ -4,7 +4,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 import Testing
-@testable import LiveAudioServer
+@testable import LiveAudioServerCore
 
 @Suite("PCMInputSource formatting")
 struct PCMInputSourceTests {

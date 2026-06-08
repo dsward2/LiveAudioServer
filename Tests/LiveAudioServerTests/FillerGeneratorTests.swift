@@ -5,7 +5,7 @@
 
 import Testing
 import Foundation
-@testable import LiveAudioServer
+@testable import LiveAudioServerCore
 
 @Suite("Filler generator")
 struct FillerGeneratorTests {

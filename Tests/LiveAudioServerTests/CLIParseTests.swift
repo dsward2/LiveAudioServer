@@ -5,7 +5,7 @@
 
 import Foundation
 import Testing
-@testable import LiveAudioServer
+@testable import LiveAudioServerCore
 
 @Suite("CLI parsing")
 struct CLIParseTests {

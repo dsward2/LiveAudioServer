@@ -39,7 +39,7 @@ let package = Package(
         .testTarget(
             name: "LiveAudioServerTests",
             dependencies: [
-                "LiveAudioServer",
+                "LiveAudioServerCore",
                 .product(name: "Testing", package: "swift-testing")
             ],
             path: "Tests/LiveAudioServerTests"
