@@ -128,6 +128,73 @@ subsequent run.
 
 ---
 
+## Use as a Swift Package
+
+LiveAudioServer also ships as a SwiftPM library product so a host macOS app
+(SwiftUI, AppKit, whatever) can start and stop the server in-process without
+spawning the CLI. Add the dependency to your `Package.swift`:
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/dsward2/LiveAudioServer.git", from: "0.1.2"),
+],
+targets: [
+    .target(
+        name: "YourHostApp",
+        dependencies: [
+            .product(name: "LiveAudioServerCore", package: "LiveAudioServer"),
+        ]
+    ),
+]
+```
+
+Then build a config, install a logger (or skip — the library defaults to
+silent), and drive the lifecycle from Swift Concurrency:
+
+```swift
+import LiveAudioServerCore
+
+// Optional: see library log lines. Default is a SilentLogger so library
+// consumers never get unexpected stderr output.
+LiveAudioServerLogging.logger = StderrLogger()  // or your own LiveAudioServerLogger
+
+var cfg = LiveAudioServerConfig()    // = ServerConfig — CLI-default values
+cfg.port           = 9000
+cfg.bindHost       = "127.0.0.1"
+cfg.inputSource    = .udp(port: 7355)   // Gqrx UDP, for example
+cfg.fillerMode     = .tone
+cfg.bonjourName    = "My Radio"
+// …override any other fields here
+
+let server = LiveAudioServer(config: cfg)
+try await server.start()
+// /stream.mp3, /stream.m4a, /hls/index.m3u8, and / are live until stop()
+// returns. start() throws LiveAudioServerError on synchronous setup failures
+// (bind, TLS load, encoder init).
+
+// Later, when the user toggles the off switch:
+await server.stop()
+```
+
+The same package vends both products, so depending on the library does not
+pull in or build the executable.
+
+Notes for integrators:
+
+- Multiple `LiveAudioServer` instances can coexist in one process, but they
+  share one global logger sink (`LiveAudioServerLogging.logger`).
+- `signal(SIGPIPE, SIG_IGN)` is set inside `start()` so a client disconnect
+  won't kill the host process.
+- Encoder lifecycle: do not call `start()` then `stop()` without the server
+  having processed at least some PCM. `lame_encode_flush` asserts internally
+  when the session received no audio. In practice this only matters for
+  unit tests; live PCM always produces frames before shutdown.
+- `LiveAudioServerCore` is `import`able from any module that depends on the
+  library product. `import LiveAudioServer` (the executable target) is not
+  meant for external consumption.
+
+---
+
 ## Build from source
 
 ### Requirements
