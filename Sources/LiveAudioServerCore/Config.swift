@@ -193,13 +193,16 @@ enum AudioFormat: String, CaseIterable {
 
 public let logQueue = DispatchQueue(label: "log")
 
+/// Internal logging entry point used throughout the library. Formats the
+/// timestamp and hands the line to whichever `LiveAudioServerLogger` is
+/// currently installed (defaults to `SilentLogger`). Never writes to
+/// stdout/stderr directly — see `LiveAudioServerLogging.logger`.
 public func log(_ msg: String, verbose: Bool = false, config: ServerConfig? = nil) {
     if verbose, let cfg = config, !cfg.verbose { return }
     logQueue.async {
-        var ts = ""
         let fmt = DateFormatter()
         fmt.dateFormat = "HH:mm:ss.SSS"
-        ts = fmt.string(from: Date())
-        fputs("[\(ts)] \(msg)\n", stderr)
+        let ts = fmt.string(from: Date())
+        LiveAudioServerLogging.logger.log("[\(ts)] \(msg)")
     }
 }

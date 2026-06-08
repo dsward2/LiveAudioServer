@@ -153,6 +153,10 @@ func printUsage() {
 @main
 struct LiveAudioServerApp {
     static func main() {
+        // The library defaults to a silent logger so host apps don't get
+        // stderr output they didn't ask for. The CLI absolutely wants stderr.
+        LiveAudioServerLogging.logger = StderrLogger()
+
         let argv = Array(CommandLine.arguments.dropFirst())
         let config: ServerConfig
 
