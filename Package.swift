@@ -6,6 +6,14 @@ let package = Package(
     platforms: [
         .macOS(.v13)
     ],
+    products: [
+        // Public library product so external SwiftPM packages (e.g. a SwiftUI
+        // host app) can `.package(url: …)` this repo and consume the server
+        // in-process. The CLI binary continues to exist as a separate
+        // executable product.
+        .library(name: "LiveAudioServerCore", targets: ["LiveAudioServerCore"]),
+        .executable(name: "LiveAudioServer", targets: ["LiveAudioServer"])
+    ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-testing.git", from: "0.10.0")
     ],
@@ -16,9 +24,16 @@ let package = Package(
             name: "CLame",
             path: "Frameworks/Mp3Lame.xcframework"
         ),
+        // Server + encoders + streaming + config. Reusable from a host app.
+        .target(
+            name: "LiveAudioServerCore",
+            dependencies: ["CLame"],
+            path: "Sources/LiveAudioServerCore"
+        ),
+        // Thin CLI shim: argument parsing, signal handling, process exit.
         .executableTarget(
             name: "LiveAudioServer",
-            dependencies: ["CLame"],
+            dependencies: ["LiveAudioServerCore"],
             path: "Sources/LiveAudioServer"
         ),
         .testTarget(
