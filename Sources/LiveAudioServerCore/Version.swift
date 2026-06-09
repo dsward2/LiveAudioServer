@@ -20,20 +20,20 @@
 
 import Foundation
 
-let liveAudioServerVersion = "0.1.2"
+public let liveAudioServerVersion = "0.1.3"
 
 /// Short git SHA stamped into the build. `"dev"` during day-to-day development;
 /// updated to the actual `git rev-parse --short HEAD` value at release-tag time.
-let liveAudioServerGitSHA  = "0.1.2"
+public let liveAudioServerGitSHA  = "0.1.3"
 
-/// "LiveAudioServer 0.1.2 (sha)" — used by `--version` and the startup banner.
-var liveAudioServerVersionString: String {
+/// "LiveAudioServer 0.1.3 (sha)" — used by `--version` and the startup banner.
+public var liveAudioServerVersionString: String {
     return "LiveAudioServer \(liveAudioServerVersion) (\(liveAudioServerGitSHA))"
 }
 
 /// Brief copyright / license / repository notice shown by `--version` and at
 /// the top of `--help`. Keep it short — humans skim CLI banners.
-let liveAudioServerNotice = """
+public let liveAudioServerNotice = """
 Copyright (c)2026 by Douglas Ward - Conway, Arkansas US
 Licensed under the Apache License, Version 2.0
 https://github.com/dsward2/LiveAudioServer

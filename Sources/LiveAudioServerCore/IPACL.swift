@@ -116,14 +116,14 @@ enum IPMatcher: Equatable {
 
 /// Ordered list of allow-list matchers. A connection is allowed iff at least
 /// one matcher matches the source host.
-struct IPAllowList: Equatable {
+public struct IPAllowList: Equatable {
     let matchers: [IPMatcher]
     /// `true` for the unrestricted default — kept as a separate flag so a
     /// caller passing an empty `--allow-ip` value gets the desired "block all
     /// except listed" semantics rather than accidentally being unrestricted.
     let allowAll: Bool
 
-    static let allowAll = IPAllowList(matchers: [], allowAll: true)
+    public static let allowAll = IPAllowList(matchers: [], allowAll: true)
 
     func allows(_ host: NWEndpoint.Host) -> Bool {
         if allowAll { return true }
@@ -131,10 +131,10 @@ struct IPAllowList: Equatable {
     }
 }
 
-enum IPACLParseError: Error, CustomStringConvertible {
+public enum IPACLParseError: Error, CustomStringConvertible {
     case invalidToken(String)
 
-    var description: String {
+    public var description: String {
         switch self {
         case .invalidToken(let t): return "Invalid --allow-ip value '\(t)'. Use a single IP or CIDR (e.g. 192.168.0.0/24)."
         }
@@ -142,7 +142,7 @@ enum IPACLParseError: Error, CustomStringConvertible {
 }
 
 /// Parse a comma-separated list like "127.0.0.1,192.168.0.0/24,::1".
-func parseAllowList(_ list: String) throws -> IPAllowList {
+public func parseAllowList(_ list: String) throws -> IPAllowList {
     let tokens = list
         .split(separator: ",", omittingEmptySubsequences: true)
         .map { $0.trimmingCharacters(in: .whitespaces) }

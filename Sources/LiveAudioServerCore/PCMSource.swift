@@ -155,7 +155,7 @@ struct FillerGenerator {
 
 /// Continuously reads raw 16-bit little-endian interleaved PCM from stdin, UDP,
 /// or TCP and broadcasts frames to all registered consumers.
-final class PCMReader {
+final class PCMReader: @unchecked Sendable {
     private let config: ServerConfig
     private let broadcaster: PCMBroadcaster
     private var isRunning = false

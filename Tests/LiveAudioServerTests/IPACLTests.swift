@@ -6,7 +6,7 @@
 import Testing
 import Foundation
 import Network
-@testable import LiveAudioServer
+@testable import LiveAudioServerCore
 
 @Suite("IPACL parsing and matching")
 struct IPACLTests {

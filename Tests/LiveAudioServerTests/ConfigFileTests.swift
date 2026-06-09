@@ -5,7 +5,7 @@
 
 import Testing
 import Foundation
-@testable import LiveAudioServer
+@testable import LiveAudioServerCore
 
 @Suite("Config file loading and merge")
 struct ConfigFileTests {

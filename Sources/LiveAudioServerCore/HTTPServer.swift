@@ -1081,8 +1081,9 @@ final class HTTPServer {
                 }
                 log("   Status page: \(scheme)://\(self.config.bindHost ?? "localhost"):\(port)/\n")
             case .failed(let error):
+                // Library code never exits the process. The host can poll
+                // `LiveAudioServer.isRunning` if it cares about this state.
                 log("❌ \(scheme.uppercased()) listener failed: \(error)")
-                exit(1)
             default: break
             }
         }

@@ -65,10 +65,14 @@ fi
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${REPO_ROOT}"
 
-# Extract version from Sources/LiveAudioServer/Version.swift
-VERSION="$(awk -F'"' '/^let liveAudioServerVersion / {print $2}' Sources/LiveAudioServer/Version.swift)"
+# Extract version from Sources/LiveAudioServerCore/Version.swift. The `public`
+# prefix landed when Version.swift moved to the library target; the regex
+# accepts both `let` and `public let` so the script still parses cleanly if
+# the visibility ever flips back.
+VERSION_FILE="Sources/LiveAudioServerCore/Version.swift"
+VERSION="$(awk -F'"' '/^(public )?let liveAudioServerVersion / {print $2; exit}' "${VERSION_FILE}")"
 if [[ -z "${VERSION}" ]]; then
-    echo "ERROR: could not parse version from Version.swift" >&2
+    echo "ERROR: could not parse version from ${VERSION_FILE}" >&2
     exit 1
 fi
 
@@ -80,74 +84,45 @@ ZIP_PATH="${STAGE_ROOT}/${RELEASE_DIR_NAME}-macos-universal.zip"
 
 echo "==> LiveAudioServer ${VERSION} — release build"
 
-# Multi-arch SwiftPM builds (--arch arm64 --arch x86_64) require XCBuild from
-# a full Xcode installation. Command Line Tools alone ships no XCBuild and
-# fails with: "xcbuild executable at .../XCBuild.framework/.../xcbuild does
-# not exist or is not executable". Detect that and either auto-resolve to
-# Xcode.app or fail with a clear hint before we touch anything on disk.
-ensure_xcode_developer_dir() {
-    local current
-    current="$(xcode-select -p 2>/dev/null || true)"
-    if [[ -n "${current}" && -e "${current}/../SharedFrameworks/XCBuild.framework" ]]; then
-        return 0
-    fi
-    local candidates=(
-        "/Applications/Xcode.app/Contents/Developer"
-        "${HOME}/Applications/Xcode.app/Contents/Developer"
-    )
-    local c
-    for c in "${candidates[@]}"; do
-        if [[ -e "${c}/../SharedFrameworks/XCBuild.framework" ]]; then
-            export DEVELOPER_DIR="${c}"
-            echo "      DEVELOPER_DIR=${c} (auto-detected; xcode-select points at CLT)"
-            return 0
-        fi
-    done
-    local found
-    found="$(mdfind 'kMDItemCFBundleIdentifier == "com.apple.dt.Xcode"' 2>/dev/null | head -1)"
-    if [[ -n "${found}" && -e "${found}/Contents/SharedFrameworks/XCBuild.framework" ]]; then
-        export DEVELOPER_DIR="${found}/Contents/Developer"
-        echo "      DEVELOPER_DIR=${DEVELOPER_DIR} (auto-detected via Spotlight)"
-        return 0
-    fi
-    cat >&2 <<EOF
-
-ERROR: A full Xcode installation (not just Command Line Tools) is required
-       for multi-arch builds. SwiftPM uses XCBuild from Xcode.app to drive
-       --arch arm64 --arch x86_64, and that framework is not shipped with
-       the Command Line Tools.
-
-       Currently active developer dir: ${current:-(none)}
-
-       Fix one of:
-         sudo xcode-select -s /Applications/Xcode.app
-         export DEVELOPER_DIR=/path/to/Xcode.app/Contents/Developer
-EOF
-    return 1
-}
-
-echo "[0/8] Locating full Xcode (multi-arch builds need XCBuild)"
-ensure_xcode_developer_dir
-
 echo "[1/8] Cleaning build tree"
 rm -rf "${STAGE_ROOT}" .build
 mkdir -p "${STAGE_DIR}"
 
-echo "[2/8] Building universal binary (arm64 + x86_64)"
-swift build -c release --arch arm64 --arch x86_64
-BIN_DIR="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)"
-SRC_BIN="${BIN_DIR}/${NAME}"
-if [[ ! -x "${SRC_BIN}" ]]; then
-    echo "ERROR: expected binary at ${SRC_BIN} not found" >&2
-    exit 1
-fi
+# Build each architecture in its own llbuild invocation via `--triple`, then
+# `lipo` the two binaries into a universal Mach-O. The alternative
+# `--arch arm64 --arch x86_64` routes through XCBuild, where the binary
+# target's libmp3lame.a search path silently fails to propagate to the
+# LiveAudioServerCore library's partial-link step (-L is dropped while
+# -lmp3lame survives), producing `ld: library not found for -lmp3lame`.
+# Per-arch llbuild + lipo sidesteps that path entirely and is also faster.
+echo "[2/8] Building per-arch binaries and lipo-ing universal"
+build_arch() {
+    local arch="$1"
+    local triple="${arch}-apple-macosx13.0"
+    # Progress goes to stderr so the captured stdout is just the bin path.
+    echo "      • ${arch} (${triple})" >&2
+    swift build -c release --triple "${triple}" >/dev/null
+    swift build -c release --triple "${triple}" --show-bin-path
+}
+ARM64_DIR="$(build_arch arm64)"
+X86_64_DIR="$(build_arch x86_64)"
+ARM64_BIN="${ARM64_DIR}/${NAME}"
+X86_64_BIN="${X86_64_DIR}/${NAME}"
+for b in "${ARM64_BIN}" "${X86_64_BIN}"; do
+    if [[ ! -x "${b}" ]]; then
+        echo "ERROR: expected binary at ${b} not found" >&2
+        exit 1
+    fi
+done
 
-# Sanity-check the architectures.
+# Combine into a universal Mach-O before signing.
+SRC_BIN="${STAGE_ROOT}/${NAME}.universal"
+lipo -create "${ARM64_BIN}" "${X86_64_BIN}" -output "${SRC_BIN}"
 ARCHS="$(lipo -archs "${SRC_BIN}" 2>/dev/null || true)"
-echo "      Built: ${SRC_BIN}"
+echo "      Universal binary: ${SRC_BIN}"
 echo "      Archs: ${ARCHS}"
 if ! [[ "${ARCHS}" == *"arm64"* && "${ARCHS}" == *"x86_64"* ]]; then
-    echo "ERROR: binary is not universal (got: ${ARCHS})" >&2
+    echo "ERROR: lipo result is not universal (got: ${ARCHS})" >&2
     exit 1
 fi
 
