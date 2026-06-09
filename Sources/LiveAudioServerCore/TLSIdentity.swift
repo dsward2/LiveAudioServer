@@ -22,13 +22,13 @@ import Foundation
 import Network
 import Security
 
-enum TLSIdentityError: Error, CustomStringConvertible {
+public enum TLSIdentityError: Error, CustomStringConvertible {
     case fileNotReadable(String)
     case importFailed(OSStatus)
     case emptyIdentity
     case secIdentityCreateFailed
 
-    var description: String {
+    public var description: String {
         switch self {
         case .fileNotReadable(let p):
             return "TLS identity file not readable: \(p)"
@@ -51,7 +51,7 @@ enum TLSIdentityError: Error, CustomStringConvertible {
 /// Loads a PKCS#12 file from disk and returns a `sec_identity_t` suitable for
 /// `sec_protocol_options_set_local_identity`. No keychain side effects: the
 /// identity is returned in-memory only.
-func loadTLSIdentity(p12Path: String, password: String?) throws -> sec_identity_t {
+public func loadTLSIdentity(p12Path: String, password: String?) throws -> sec_identity_t {
     let url = URL(fileURLWithPath: p12Path)
     guard let data = try? Data(contentsOf: url) else {
         throw TLSIdentityError.fileNotReadable(p12Path)

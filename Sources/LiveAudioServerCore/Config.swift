@@ -18,6 +18,7 @@
 // Configuration, shared types, and constants.
 
 import Foundation
+import Network
 
 // MARK: - Server Configuration
 
@@ -100,6 +101,12 @@ public struct ServerConfig {
     public var tlsPort: UInt16? = nil
     public var tlsIdentityPath: String? = nil
     public var tlsPassword: String? = nil
+    /// Pre-loaded TLS identity for programmatic embedders. When set, it takes
+    /// precedence over `tlsIdentityPath` / `tlsPassword` and the path/password
+    /// fields are ignored. The CLI continues to populate `tlsIdentityPath` /
+    /// `tlsPassword`; the identity field is the embed path so a host app can
+    /// share one already-loaded `sec_identity_t` across multiple listeners.
+    public var tlsIdentity: sec_identity_t? = nil
     /// If non-nil, HTTP/HTTPS listeners bind to this specific local address
     /// instead of all interfaces. Use "127.0.0.1" for IPv4 localhost only,
     /// "::1" for IPv6 localhost only, or an explicit LAN address.

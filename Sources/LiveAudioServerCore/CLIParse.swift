@@ -274,6 +274,10 @@ public func parseCLI(_ args: [String]) -> CLIParseResult {
     }
 
     // Cross-flag validation.
+    // Note: these checks only govern CLI inputs. Programmatic embedders may
+    // instead assign `ServerConfig.tlsIdentity` directly (a pre-loaded
+    // `sec_identity_t`) and skip `tlsIdentityPath` entirely; the library's
+    // identity-resolution step honors that injected value.
     if config.tlsPort != nil && config.tlsIdentityPath == nil {
         return .error("--tls-port requires --tls-identity")
     }

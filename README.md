@@ -179,6 +179,41 @@ await server.stop()
 The same package vends both products, so depending on the library does not
 pull in or build the executable.
 
+### Embedding in a host app
+
+If your host app already terminates TLS for its own listeners (for example, a
+SwiftUI admin UI), you can hand LiveAudioServer the same pre-loaded
+`sec_identity_t` so users only have to trust one self-signed certificate.
+`ServerConfig.tlsIdentity` is the embed path; when set, it takes precedence
+over `tlsIdentityPath` / `tlsPassword`:
+
+```swift
+import LiveAudioServerCore
+import Network
+
+// Your host app loads (or generates and persists in App Support) the .p12
+// once, then reuses the resulting identity for every listener it owns.
+// `loadTLSIdentity` is public so the host doesn't have to reimplement
+// PKCS#12 → sec_identity_t.
+let identity = try loadTLSIdentity(
+    p12Path: identityFileURL.path,
+    password: identityPassword
+)
+
+var cfg = LiveAudioServerConfig()
+cfg.port         = 8080
+cfg.tlsPort      = 8443
+cfg.tlsIdentity  = identity          // injected — no path/password needed
+cfg.inputSource  = .udp(port: 7355)
+
+let server = LiveAudioServer(config: cfg)
+try await server.start()
+```
+
+`loadTLSIdentity(p12Path:password:)` and the `TLSIdentityError` enum it
+throws are both public, so host apps that want to load their own `.p12` from
+disk can share the same loader the CLI uses.
+
 Notes for integrators:
 
 - Multiple `LiveAudioServer` instances can coexist in one process, but they

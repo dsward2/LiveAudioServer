@@ -87,6 +87,20 @@ public final class LiveAudioServer: @unchecked Sendable {
         self.config = config
     }
 
+    /// Resolve the TLS identity that `start()` will hand to `HTTPServer`.
+    /// Precedence: an injected `config.tlsIdentity` wins; otherwise load
+    /// `config.tlsIdentityPath` from disk; otherwise no TLS identity. Exposed
+    /// (internal) so the lifecycle precedence is exercisable from tests.
+    static func resolveTLSIdentity(config: ServerConfig) throws -> sec_identity_t? {
+        if let injected = config.tlsIdentity {
+            return injected
+        }
+        if let identityPath = config.tlsIdentityPath {
+            return try loadTLSIdentity(p12Path: identityPath, password: config.tlsPassword)
+        }
+        return nil
+    }
+
     public var isRunning: Bool {
         withState { _isRunning }
     }
@@ -99,13 +113,11 @@ public final class LiveAudioServer: @unchecked Sendable {
             if _isRunning { throw LiveAudioServerError.alreadyRunning }
         }
 
-        var tlsIdentity: sec_identity_t? = nil
-        if let identityPath = config.tlsIdentityPath {
-            do {
-                tlsIdentity = try loadTLSIdentity(p12Path: identityPath, password: config.tlsPassword)
-            } catch {
-                throw LiveAudioServerError.tlsIdentityLoadFailed("\(error)")
-            }
+        let tlsIdentity: sec_identity_t?
+        do {
+            tlsIdentity = try Self.resolveTLSIdentity(config: config)
+        } catch {
+            throw LiveAudioServerError.tlsIdentityLoadFailed("\(error)")
         }
 
         log("🎙 \(liveAudioServerVersionString)")

@@ -10,6 +10,7 @@
 
 import Testing
 import Foundation
+import Network
 @testable import LiveAudioServerCore
 
 @Suite("LiveAudioServer public API")
@@ -107,6 +108,121 @@ struct LiveAudioServerLibraryAPITests {
         let server = LiveAudioServer(config: LiveAudioServerConfig())
         await server.stop()
         #expect(server.isRunning == false)
+    }
+
+    // MARK: - Injected TLS identity (programmatic embedders)
+
+    /// Synthesize a fresh self-signed PKCS#12 in a temp dir using the system
+    /// `/usr/bin/openssl`, then load it through the now-public
+    /// `loadTLSIdentity`. Lets these tests exercise the real
+    /// `sec_identity_t` injection path without checking a binary fixture
+    /// into the repo. Returns nil (and the test should skip) if openssl is
+    /// unavailable or the toolchain produces a .p12 that SecPKCS12Import
+    /// doesn't accept on this host.
+    private static func makeTestTLSIdentity() -> (identity: sec_identity_t, p12Path: String)? {
+        let openssl = "/usr/bin/openssl"
+        guard FileManager.default.isExecutableFile(atPath: openssl) else { return nil }
+
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LiveAudioServerTLS-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        } catch {
+            return nil
+        }
+        let keyPath  = tmpDir.appendingPathComponent("key.pem").path
+        let certPath = tmpDir.appendingPathComponent("cert.pem").path
+        let p12Path  = tmpDir.appendingPathComponent("identity.p12").path
+        let password = "test"
+
+        func run(_ args: [String]) -> Bool {
+            let p = Process()
+            p.launchPath = openssl
+            p.arguments = args
+            p.standardOutput = Pipe()
+            p.standardError  = Pipe()
+            do {
+                try p.run()
+            } catch {
+                return false
+            }
+            p.waitUntilExit()
+            return p.terminationStatus == 0
+        }
+
+        // Self-signed key + cert.
+        guard run([
+            "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+            "-keyout", keyPath, "-out", certPath,
+            "-days", "1", "-subj", "/CN=LiveAudioServerTest"
+        ]) else { return nil }
+
+        // Package as PKCS#12. Force legacy ciphers so SecPKCS12Import on
+        // macOS 13 accepts the bundle regardless of the host's openssl
+        // version defaults.
+        guard run([
+            "pkcs12", "-export",
+            "-inkey", keyPath, "-in", certPath,
+            "-out", p12Path, "-passout", "pass:\(password)",
+            "-name", "LiveAudioServerTest",
+            "-keypbe", "PBE-SHA1-3DES",
+            "-certpbe", "PBE-SHA1-3DES",
+            "-macalg", "SHA1"
+        ]) else { return nil }
+
+        do {
+            let identity = try loadTLSIdentity(p12Path: p12Path, password: password)
+            return (identity, p12Path)
+        } catch {
+            return nil
+        }
+    }
+
+    @Test("resolveTLSIdentity: injected identity satisfies config without tlsIdentityPath")
+    func injectedTLSIdentityIsSufficient() throws {
+        guard let fixture = Self.makeTestTLSIdentity() else {
+            // openssl missing or produced a .p12 SecPKCS12Import can't read;
+            // skip rather than fail the suite.
+            return
+        }
+
+        var cfg = LiveAudioServerConfig()
+        cfg.tlsPort = Self.ephemeralPort()
+        cfg.tlsIdentity = fixture.identity
+        // Deliberately leave tlsIdentityPath / tlsPassword nil — the injected
+        // identity must be enough to produce a TLS-capable ServerConfig.
+        #expect(cfg.tlsIdentityPath == nil)
+        #expect(cfg.tlsPassword == nil)
+
+        let resolved = try LiveAudioServer.resolveTLSIdentity(config: cfg)
+        #expect(resolved != nil)
+    }
+
+    @Test("resolveTLSIdentity: injected identity wins over a bad tlsIdentityPath")
+    func injectedTLSIdentityWinsOverPath() throws {
+        guard let fixture = Self.makeTestTLSIdentity() else {
+            return
+        }
+
+        var cfg = LiveAudioServerConfig()
+        cfg.tlsPort = Self.ephemeralPort()
+        cfg.tlsIdentity = fixture.identity
+        // Path is set but points to a file that definitely won't load. If the
+        // resolver were still going through the path branch, this would
+        // throw. The injected identity should win and the resolver should
+        // succeed.
+        cfg.tlsIdentityPath = "/nonexistent/path/to/identity.p12"
+        cfg.tlsPassword = "wrong"
+
+        let resolved = try LiveAudioServer.resolveTLSIdentity(config: cfg)
+        #expect(resolved != nil)
+    }
+
+    @Test("resolveTLSIdentity: no identity and no path returns nil")
+    func noTLSIdentityReturnsNil() throws {
+        let cfg = LiveAudioServerConfig()
+        let resolved = try LiveAudioServer.resolveTLSIdentity(config: cfg)
+        #expect(resolved == nil)
     }
 
     @Test("start() while already running throws .alreadyRunning")
