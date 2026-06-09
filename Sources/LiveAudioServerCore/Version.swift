@@ -20,11 +20,11 @@
 
 import Foundation
 
-public let liveAudioServerVersion = "0.1.3"
+public let liveAudioServerVersion = "0.1.4"
 
 /// Short git SHA stamped into the build. `"dev"` during day-to-day development;
 /// updated to the actual `git rev-parse --short HEAD` value at release-tag time.
-public let liveAudioServerGitSHA  = "0.1.3"
+public let liveAudioServerGitSHA  = "0.1.4"
 
 /// "LiveAudioServer 0.1.3 (sha)" — used by `--version` and the startup banner.
 public var liveAudioServerVersionString: String {
