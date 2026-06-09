@@ -50,10 +50,21 @@ public enum LiveAudioServerError: Error, CustomStringConvertible {
 /// on a Network.framework queue. `start()` returns once setup is done, with
 /// the server running in the background. Multiple instances can coexist in
 /// the same process — each owns its own listeners, encoders, and reader.
-public final class LiveAudioServer {
+public final class LiveAudioServer: @unchecked Sendable {
     private let config: ServerConfig
-    private let stateLock = NSLock()
+    /// Serializes mutations to `_isRunning` and the component slots. Used
+    /// instead of NSLock because NSLock.lock()/unlock() carry a Swift 6
+    /// availability warning inside async functions; DispatchQueue.sync is
+    /// async-safe and gives us the same mutual exclusion.
+    private let stateQueue = DispatchQueue(label: "LiveAudioServer.state")
     private var _isRunning = false
+
+    /// Run a block with exclusive access to the component slots. The closure
+    /// is rethrowing so callers can throw from inside the critical section
+    /// (e.g. the `.alreadyRunning` check).
+    private func withState<T>(_ body: () throws -> T) rethrows -> T {
+        try stateQueue.sync(execute: body)
+    }
 
     // Components held for the lifetime of one start/stop cycle.
     private var statsCollector: StatsCollector?
@@ -77,20 +88,16 @@ public final class LiveAudioServer {
     }
 
     public var isRunning: Bool {
-        stateLock.lock(); defer { stateLock.unlock() }
-        return _isRunning
+        withState { _isRunning }
     }
 
     /// Wire up encoders, broadcasters, HTTP listener, Bonjour, and the PCM
     /// reader. Returns once all components are running. The reader / listener
     /// continue on background queues until `stop()` is called.
     public func start() async throws {
-        stateLock.lock()
-        if _isRunning {
-            stateLock.unlock()
-            throw LiveAudioServerError.alreadyRunning
+        try withState {
+            if _isRunning { throw LiveAudioServerError.alreadyRunning }
         }
-        stateLock.unlock()
 
         var tlsIdentity: sec_identity_t? = nil
         if let identityPath = config.tlsIdentityPath {
@@ -253,22 +260,19 @@ public final class LiveAudioServer {
             self.statsTimer = timer
         }
 
-        stateLock.lock()
-        _isRunning = true
-        stateLock.unlock()
+        withState { _isRunning = true }
     }
 
     /// Graceful shutdown: stop accepting new HTTP clients, flush encoders,
     /// stop recordings, retire Bonjour. Idempotent — calling on a stopped
     /// instance is a no-op.
     public func stop() async {
-        stateLock.lock()
-        if !_isRunning {
-            stateLock.unlock()
-            return
+        let wasRunning = withState { () -> Bool in
+            let was = _isRunning
+            _isRunning = false
+            return was
         }
-        _isRunning = false
-        stateLock.unlock()
+        if !wasRunning { return }
 
         statsTimer?.cancel()
         statsTimer = nil
