@@ -17,8 +17,8 @@
 class Liveaudioserver < Formula
   desc "Live audio streaming server (MP3 + AAC + HLS) for macOS"
   homepage "https://github.com/dsward2/LiveAudioServer"
-  url "https://github.com/dsward2/LiveAudioServer/archive/refs/tags/v0.1.4.tar.gz"
-  sha256 "cd22224c22d3c28fd9f5152d332e560926e50d225ccd43cf9a884db7dad2b4be"
+  url "https://github.com/dsward2/LiveAudioServer/archive/refs/tags/v0.1.5.tar.gz"
+  sha256 "6f1808e64c3464c6e16642066698051d6eb34d4cd9ac769531c06f49602248e1"
   license "Apache-2.0"
   head "https://github.com/dsward2/LiveAudioServer.git", branch: "main"
 
