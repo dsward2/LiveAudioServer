@@ -34,7 +34,13 @@ let package = Package(
         .executableTarget(
             name: "LiveAudioServer",
             dependencies: ["LiveAudioServerCore"],
-            path: "Sources/LiveAudioServer"
+            path: "Sources/LiveAudioServer",
+            linkerSettings: [
+                .unsafeFlags([
+                    "-Xlinker", "-rpath",
+                    "-Xlinker", "@executable_path/../Frameworks"
+                ])
+            ]
         ),
         .testTarget(
             name: "LiveAudioServerTests",
