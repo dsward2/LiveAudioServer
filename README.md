@@ -230,6 +230,145 @@ Notes for integrators:
 
 ---
 
+## Embedding the CLI in a macOS app
+
+LiveAudioServer can also ship as a CLI helper *inside* another macOS app
+bundle — useful when a sandboxed host app wants to spawn the server as a
+child process rather than link the library directly. The helper is added to
+the host target in Xcode's General tab under **Frameworks, Libraries, and
+Embedded Content** with **Embed & Sign**, and lands at:
+
+```
+YourApp.app/Contents/Helpers/LiveAudioServer
+```
+
+Launch it from the host with:
+
+```swift
+let helperURL = Bundle.main.url(forAuxiliaryExecutable: "LiveAudioServer")
+```
+
+Two quirks of Xcode's embed pipeline for SwiftPM executables are worth
+knowing up front.
+
+### LiveAudioServerCore is promoted to a dynamic framework
+
+If the host app *only* links `LiveAudioServerCore`, Xcode statically links
+the library into the host binary. The moment the CLI executable is also
+embedded via "Embed & Sign", Xcode promotes `LiveAudioServerCore` to a
+dynamic framework so the host app and the helper can share one copy. The
+framework ends up at:
+
+```
+YourApp.app/Contents/Frameworks/LiveAudioServerCore.framework
+```
+
+This is expected. The framework must remain embedded for the helper to
+launch — removing it will cause the helper to fail at dyld load time with:
+
+```
+dyld: Library not loaded: @rpath/LiveAudioServerCore.framework/Versions/A/LiveAudioServerCore
+```
+
+### Embed-time rpath stripping (known limitation)
+
+The executable target in this package declares the rpath the helper needs
+in order to find that shared framework at runtime:
+
+```swift
+.executableTarget(
+    name: "LiveAudioServer",
+    dependencies: ["LiveAudioServerCore"],
+    path: "Sources/LiveAudioServer",
+    linkerSettings: [
+        .unsafeFlags([
+            "-Xlinker", "-rpath",
+            "-Xlinker", "@executable_path/../Frameworks"
+        ])
+    ]
+)
+```
+
+Built directly with `swift build`, the resulting binary has all three
+expected rpaths:
+
+```
+/usr/lib/swift
+…/PackageFrameworks
+@executable_path/../Frameworks
+```
+
+But when Xcode embeds the executable into a host app bundle via
+"Embed & Sign", the copy at `Contents/Helpers/LiveAudioServer` is a
+different binary (different MD5, larger size) that is missing the
+`@executable_path/../Frameworks` entry, even though the single `Ld`
+invocation in the build log shows the right `-rpath` flag. Launching the
+embedded copy standalone fails with:
+
+```
+dyld: Library not loaded: @rpath/LiveAudioServerCore.framework/Versions/A/LiveAudioServerCore
+```
+
+This appears to be a limitation of how Xcode processes SwiftPM executable
+products through its embed/sign pipeline — the rpath added via
+`linkerSettings.unsafeFlags` does not survive. Several Package.swift-level
+variants were tried without success (alternate `-rpath` flag spellings,
+adding `@loader_path/../Frameworks` as a second entry, dropping the
+`-Xlinker` indirection). The library target's install name is set by
+Xcode/SPM to `@rpath/…` and cannot be overridden from Package.swift, so a
+custom non-rpath install name isn't an option either.
+
+### Workaround: re-add the rpath in the host app's build
+
+Until a clean Package.swift-level fix is found, the host app needs a Run
+Script build phase that runs **after** Embed Frameworks. In the host
+target:
+
+1. Add a new **Run Script** build phase positioned after "Embed Frameworks".
+2. In the host target's Build Settings, set **User Script Sandboxing**
+   (`ENABLE_USER_SCRIPT_SANDBOXING`) to **No** — the script needs to modify
+   the embedded binary, which lives outside the sandbox the build phase
+   would otherwise get.
+3. Paste this into the script body:
+
+   ```bash
+   HELPER="${TARGET_BUILD_DIR}/${WRAPPER_NAME}/Contents/Helpers/LiveAudioServer"
+   STAMP="${SCRIPT_OUTPUT_FILE_0}"
+   if [ -f "$HELPER" ]; then
+       if ! otool -l "$HELPER" | grep -q "@executable_path/../Frameworks"; then
+           install_name_tool -add_rpath "@executable_path/../Frameworks" "$HELPER"
+           codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$HELPER"
+       fi
+   fi
+   mkdir -p "$(dirname "$STAMP")"
+   touch "$STAMP"
+   ```
+
+4. Set **Input Files** to:
+
+   ```
+   $(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Helpers/LiveAudioServer
+   ```
+
+5. Set **Output Files** to a stamp path under `$(DERIVED_FILE_DIR)`, e.g.:
+
+   ```
+   $(DERIVED_FILE_DIR)/liveaudioserver-rpath.stamp
+   ```
+
+The output stamp lets Xcode's build graph reason about phase ordering and
+incremental builds. The script is idempotent: it only adds the rpath when
+it isn't already present and re-signs with whatever identity the host
+target is configured to use (or ad-hoc, via the `:-` fallback, for an
+unsigned Debug build).
+
+After the script runs, `otool -l Contents/Helpers/LiveAudioServer` should
+list `@executable_path/../Frameworks` alongside the two rpaths Xcode kept,
+and the helper will dyld-resolve `LiveAudioServerCore` out of
+`Contents/Frameworks/`.
+
+---
+
 ## Build from source
 
 ### Requirements
