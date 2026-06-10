@@ -136,7 +136,7 @@ spawning the CLI. Add the dependency to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/dsward2/LiveAudioServer.git", from: "0.1.4"),
+    .package(url: "https://github.com/dsward2/LiveAudioServer.git", from: "0.1.5"),
 ],
 targets: [
     .target(
@@ -891,7 +891,7 @@ paths and version. `path=/` is the conventional Safari Bonjour-bookmark key;
 `status=/` is the same path under an explicit name for non-Safari clients:
 
 ```
-ver=0.1.4
+ver=0.1.5
 path=/
 status=/
 mp3=/stream.mp3
@@ -904,7 +904,7 @@ details, so a LiveAudioServer-aware client can enumerate all streams in a
 single Bonjour lookup without hitting `/status.json`:
 
 ```
-ver=0.1.4
+ver=0.1.5
 path=/
 status=/
 rate=48000
