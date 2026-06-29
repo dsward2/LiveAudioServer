@@ -94,6 +94,10 @@ func printUsage() {
                                 stay live.
       --no-fifo-reopen          Disable the FIFO re-open behaviour above; the
                                 reader will silence-fill after EOF instead.
+      --exit-with-parent        Exit if the parent process dies (even on a
+                                crash). Useful when launched as a helper by a
+                                host app that needs this server reaped instead
+                                of orphaned holding its HTTP port.
       --silence-dither          Inject inaudible TPDF dither (±1 LSB) once a
                                 run of digitally-silent samples crosses
                                 --silence-dither-ms. Prevents downstream
@@ -218,6 +222,25 @@ struct LiveAudioServerApp {
         sigInt.resume()
         sigTerm.resume()
         _ = sigInt; _ = sigTerm
+
+        // Parent-death watchdog (--exit-with-parent). Polls getppid(); when the
+        // launching app dies (quit or crash) this process is reparented to
+        // launchd (pid 1), so getppid() changes — at which point we shut down
+        // gracefully, freeing the HTTP port instead of orphaning it.
+        var parentWatchdog: DispatchSourceTimer?
+        if config.exitWithParent {
+            let originalParent = getppid()
+            let timer = DispatchSource.makeTimerSource(queue: .global())
+            timer.schedule(deadline: .now() + 0.5, repeating: 0.5)
+            timer.setEventHandler {
+                if getppid() != originalParent {
+                    runGracefulShutdown("Parent process exit")
+                }
+            }
+            timer.resume()
+            parentWatchdog = timer
+        }
+        _ = parentWatchdog
 
         RunLoop.main.run()
     }
