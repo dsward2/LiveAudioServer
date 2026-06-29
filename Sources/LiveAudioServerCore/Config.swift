@@ -62,6 +62,11 @@ public struct ServerConfig {
     public var aacBitrate: Int = 128_000  // bps (AudioToolbox uses bps)
     public var verbose: Bool = false
     public var stdinChunkFrames: Int = 4096  // PCM frames read per stdin iteration
+    /// When set, the CLI exits if its parent process dies (even on a crash where
+    /// the parent can't run cleanup). Lets a host app guarantee this helper is
+    /// reaped rather than orphaned holding its HTTP port. CLI-only; see
+    /// `LiveAudioServerApp`.
+    public var exitWithParent: Bool = false
     public var keepAliveOnInputEnd: Bool = false
     /// When the input stream is a FIFO/named pipe and `keepAliveOnInputEnd` is
     /// on, re-`open()` the same path on EOF so a new producer can attach.
