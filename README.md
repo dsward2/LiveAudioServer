@@ -1184,7 +1184,7 @@ Four options help the stream survive upstream hiccups:
 
 ---
 
-###Feeding the input smoothly with a time-based buffer size
+### Feeding the input smoothly with a time-based buffer size
 
 LiveAudioServer reads and encodes on a fixed cadence — one chunk period = chunk-frames ÷ sample-rate (default 4096 ÷ 48000 ≈ 85 ms; tune with --chunk-frames). Any chunk period in which no PCM arrives emits a filler chunk (silence, or a tone with --filler-mode tone). A source must therefore deliver PCM steadily, in increments no coarser in time than the chunk period, or audio and filler interleave (choppy playback).
 
