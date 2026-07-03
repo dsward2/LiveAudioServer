@@ -151,7 +151,7 @@ func statusPage(config: ServerConfig,
     if config.enableMP3 {
         players += """
         <p class="player-label">▶ MP3 Preview</p>
-        <audio controls autoplay>
+        <audio controls>
           <source src="\(config.mountMP3)" type="audio/mpeg">
           Your browser doesn't support audio playback.
         </audio>
