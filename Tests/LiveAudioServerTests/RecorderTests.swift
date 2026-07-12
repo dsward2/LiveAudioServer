@@ -84,7 +84,7 @@ struct RecorderTests {
         #expect(r.status.bytesWritten == 10)
     }
 
-    @Test("stop closes the file and returns to idle")
+    @Test("stop closes the file and returns to idle, preserving path and byte count")
     func stopReturnsToIdle() throws {
         let path = tempPath(suffix: ".mp3")
         defer { try? FileManager.default.removeItem(atPath: path) }
@@ -95,8 +95,10 @@ struct RecorderTests {
         r.stop()
         let s = r.status
         #expect(s.state == .idle)
-        #expect(s.path == nil)
-        #expect(s.bytesWritten == 0)
+        // path and bytesWritten persist after stop so the UI can show where
+        // the file was saved; they reset to nil/0 on the next start() call.
+        #expect(s.path == path)
+        #expect(s.bytesWritten == 8)
         // The file should still exist on disk with the bytes we wrote before stop.
         let onDisk = try Data(contentsOf: URL(fileURLWithPath: path))
         #expect(onDisk.count == 8)
@@ -128,6 +130,20 @@ struct RecorderTests {
         let second = try Data(contentsOf: URL(fileURLWithPath: secondPath))
         #expect(first.count == 100)
         #expect(second.count == 7)
+    }
+
+    @Test("Tilde in path is expanded to the home directory")
+    func tildeExpansion() throws {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let name = "liveaudio-tilde-\(UUID().uuidString).mp3"
+        let tildeRelative = "~/\(name)"
+        let expected = home + "/\(name)"
+        defer { try? FileManager.default.removeItem(atPath: expected) }
+        let r = FileRecorder(format: .mp3)
+        try r.start(path: tildeRelative)
+        #expect(r.status.path == expected)
+        #expect(FileManager.default.fileExists(atPath: expected))
+        r.stop()
     }
 
     @Test("Bad path returns a RecorderError")

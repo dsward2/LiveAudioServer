@@ -388,6 +388,26 @@ swift build -c release
 
 The binary will be at `.build/release/LiveAudioServer`.
 
+> **If the build fails with a module-cache-path error** — e.g. after moving or
+> copying the project to a new directory, or after switching Swift toolchains —
+> the `.build` folder contains pre-compiled `.pcm` files that embed the old
+> absolute path. Clear them first, then rebuild:
+>
+> ```bash
+> swift package clean
+> swift build -c release
+> ```
+>
+> If you see `"this SDK is not supported by the compiler"` alongside the cache
+> error, the same stale cache is usually the trigger. After cleaning, if the
+> error persists on its own, make sure your `swift` binary and SDK come from the
+> same toolchain:
+>
+> ```bash
+> xcode-select --print-path   # should point at Xcode.app, not /Library/Developer/CommandLineTools
+> sudo xcode-select --switch /Applications/Xcode.app
+> ```
+
 ### Rebuilding the vendored libmp3lame (maintainers)
 
 `Frameworks/Mp3Lame.xcframework` is checked into the repo and is the only

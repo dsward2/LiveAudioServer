@@ -65,21 +65,23 @@ final class FileRecorder {
     }
 
     /// Begin recording to `path`. Any existing recording (idle or otherwise)
-    /// is stopped first. Truncates the destination file.
+    /// is stopped first. Truncates the destination file. Leading `~` is
+    /// expanded to the process's home directory before the file is created.
     func start(path: String) throws {
+        let resolvedPath = (path as NSString).expandingTildeInPath
         try queue.sync {
             closeHandleLocked()
-            if !FileManager.default.createFile(atPath: path, contents: nil) {
-                throw RecorderError.cannotOpen(path: path)
+            if !FileManager.default.createFile(atPath: resolvedPath, contents: nil) {
+                throw RecorderError.cannotOpen(path: resolvedPath)
             }
-            guard let h = FileHandle(forWritingAtPath: path) else {
-                throw RecorderError.cannotOpen(path: path)
+            guard let h = FileHandle(forWritingAtPath: resolvedPath) else {
+                throw RecorderError.cannotOpen(path: resolvedPath)
             }
             handle = h
-            _path = path
+            _path = resolvedPath
             _state = .recording
             _bytesWritten = 0
-            log("📼 [\(format.rawValue.uppercased())] recording → \(path)")
+            log("📼 [\(format.rawValue.uppercased())] recording → \(resolvedPath)")
         }
     }
 
@@ -105,14 +107,14 @@ final class FileRecorder {
     }
 
     /// Stop recording and close the file. Returns to the `idle` state.
+    /// `path` and `bytesWritten` are preserved so callers can report where
+    /// the file was saved; they reset to nil/0 on the next `start()` call.
     func stop() {
         queue.sync {
             guard _state != .idle else { return }
             closeHandleLocked()
             let p = _path
-            _path = nil
             _state = .idle
-            _bytesWritten = 0
             if let p = p {
                 log("📼 [\(format.rawValue.uppercased())] stopped (\(p))")
             }

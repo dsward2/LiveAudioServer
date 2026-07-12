@@ -120,7 +120,8 @@ func verifyBasicAuth(headerValue: String?, user: String, password: String) -> Bo
 
 func statusPage(config: ServerConfig,
                 mp3Clients: Int,
-                m4aClients: Int) -> Data {
+                m4aClients: Int,
+                startedAt: Date) -> Data {
     func row(_ label: String, _ value: String) -> String {
         "<div class=\"row\"><span class=\"label\">\(label)</span><span class=\"value\">\(value)</span></div>"
     }
@@ -194,7 +195,7 @@ func statusPage(config: ServerConfig,
             <label class="label" for="rec-\(format)-path">Output path</label>
             <div class="path-row">
               <input type="text" id="rec-\(format)-path" placeholder="/path/to/output.\(format)" class="text-input">
-              <button onclick="setRecorderDefaultPath('\(format)')" class="btn">Set Path</button>
+              <button id="rec-\(format)-set-path" onclick="setRecorderDefaultPath('\(format)')" class="btn">Set Path</button>
             </div>
           </div>
           <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
@@ -230,6 +231,20 @@ func statusPage(config: ServerConfig,
             urlRows += urlRow("HLS (HTTPS)", "https://\(displayHost):\(tlsPort)\(config.mountHLSIndex)")
         }
     }
+
+    let uptimeStr: String = {
+        let elapsed = Int(Date().timeIntervalSince(startedAt))
+        let h = elapsed / 3600
+        let m = (elapsed % 3600) / 60
+        let s = elapsed % 60
+        if h > 0 { return "\(h)h \(m)m \(s)s" }
+        if m > 0 { return "\(m)m \(s)s" }
+        return "\(s)s"
+    }()
+    let df = DateFormatter()
+    df.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    df.locale = Locale(identifier: "en_US_POSIX")
+    let startedStr = df.string(from: startedAt)
 
     let html = """
     <!DOCTYPE html>
@@ -293,6 +308,8 @@ func statusPage(config: ServerConfig,
           <span class="label">Channels</span>
           <span class="value">\(config.channels == 1 ? "Mono" : "Stereo")</span>
         </div>
+        \(row("Version", "\(liveAudioServerVersion) (\(liveAudioServerGitSHA))"))
+        \(row("Started", "\(startedStr)  ·  up \(uptimeStr)"))
         \(streamRows)
       </div>
 
@@ -377,9 +394,12 @@ func statusPage(config: ServerConfig,
               const el = document.getElementById(id);
               if (el) el.disabled = v;
             };
-            setDis('rec-' + fmt + '-pause',  !isRec);
-            setDis('rec-' + fmt + '-resume', !isPaused);
-            setDis('rec-' + fmt + '-stop',   isIdle);
+            setDis('rec-' + fmt + '-start',    !isIdle);
+            setDis('rec-' + fmt + '-set-path', !isIdle);
+            setDis('rec-' + fmt + '-pause',    !isRec);
+            setDis('rec-' + fmt + '-resume',   !isPaused);
+            setDis('rec-' + fmt + '-stop',      isIdle);
+            if (pathEl) pathEl.disabled = !isIdle;
           });
         }
 
@@ -407,7 +427,7 @@ func statusPage(config: ServerConfig,
           const ext = (fmt === 'aac') ? 'aac' : fmt;
           const el = document.getElementById('rec-' + fmt + '-path');
           if (el) {
-            el.value = '/tmp/LiveAudioServer-' + fmt + '-' + stamp + '.' + ext;
+            el.value = '~/Downloads/LiveAudioServer-' + fmt + '-' + stamp + '.' + ext;
             el.focus();
             el.setSelectionRange(el.value.length, el.value.length);
           }
@@ -446,6 +466,7 @@ func statusPage(config: ServerConfig,
 final class HTTPConnection {
     private let connection: NWConnection
     private let config: ServerConfig
+    private let startedAt: Date
     private let mp3Broadcaster: ChunkBroadcaster
     private let m4aBroadcaster: ChunkBroadcaster
     private let hlsSegmenter: HLSSegmenter?
@@ -459,6 +480,7 @@ final class HTTPConnection {
 
     init(_ connection: NWConnection,
          config: ServerConfig,
+         startedAt: Date,
          mp3Broadcaster: ChunkBroadcaster,
          m4aBroadcaster: ChunkBroadcaster,
          hlsSegmenter: HLSSegmenter?,
@@ -468,6 +490,7 @@ final class HTTPConnection {
          onClose: (() -> Void)? = nil) {
         self.connection      = connection
         self.config          = config
+        self.startedAt       = startedAt
         self.mp3Broadcaster  = mp3Broadcaster
         self.m4aBroadcaster  = m4aBroadcaster
         self.hlsSegmenter    = hlsSegmenter
@@ -690,7 +713,8 @@ final class HTTPConnection {
     private func serveStatus(headOnly: Bool) {
         let body = statusPage(config: config,
                               mp3Clients: mp3Broadcaster.clientCount,
-                              m4aClients: m4aBroadcaster.clientCount)
+                              m4aClients: m4aBroadcaster.clientCount,
+                              startedAt: startedAt)
         let headers = httpHeaders(status: 200, statusText: "OK", fields: [
             "Content-Type":   "text/html; charset=utf-8",
             "Content-Length": "\(body.count)",
@@ -921,6 +945,7 @@ final class HTTPServer {
     private let mp3Recorder: FileRecorder?
     private let aacRecorder: FileRecorder?
     private let tlsIdentity: sec_identity_t?
+    private var startedAt = Date()
     private var httpListener: NWListener?
     private var httpsListener: NWListener?
     private let connectionLock = NSLock()
@@ -979,6 +1004,7 @@ final class HTTPServer {
     }
 
     func start() throws {
+        startedAt = Date()
         // Plain HTTP listener (always on)
         let httpParams = NWParameters.tcp
         httpParams.allowLocalEndpointReuse = true
@@ -1048,6 +1074,7 @@ final class HTTPServer {
             let id = UUID()
             let handler = HTTPConnection(conn,
                                          config: self.config,
+                                         startedAt: self.startedAt,
                                          mp3Broadcaster: self.mp3Broadcaster,
                                          m4aBroadcaster: self.m4aBroadcaster,
                                          hlsSegmenter: self.hlsSegmenter,
