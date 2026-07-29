@@ -35,10 +35,21 @@ private func httpHeaders(status: Int, statusText: String,
     return h.data(using: .utf8)!
 }
 
+// The stream body has no known length (it's live and open-ended), and never
+// terminates on its own — so per RFC 7230 §3.3.3 it cannot be validly framed
+// by "read until close" while also claiming `Connection: keep-alive`, which
+// promises the connection stays open for more requests after this body ends.
+// `Transfer-Encoding: chunked` is the correct way to send an indeterminate-
+// length body on a persistent connection; StreamClient.send wraps every
+// outgoing write in chunk framing to match. Suspected cause of AirPlay 2
+// targets (e.g. Apple TV, whose "buffered" mode can fetch the stream URL
+// itself rather than having audio relayed through the sending Mac) being
+// pickier about this than AirPlay 1 targets like HomePod.
 private func streamHeaders(format: AudioFormat) -> Data {
     httpHeaders(status: 200, statusText: "OK", fields: [
         "Content-Type":              format.mimeType,
         "Connection":                "keep-alive",
+        "Transfer-Encoding":         "chunked",
         "Cache-Control":             "no-cache, no-store",
         "X-Content-Type-Options":    "nosniff",
         "icy-name":                  "LiveAudioServer",

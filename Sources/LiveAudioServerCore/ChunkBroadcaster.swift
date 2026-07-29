@@ -39,6 +39,10 @@ final class StreamClient {
     }
 
     /// Send a chunk to this client. Returns false if the client is congested / dead.
+    ///
+    /// The response declares `Transfer-Encoding: chunked` (see `streamHeaders`
+    /// in HTTPServer.swift), so every write on the wire must be wrapped in
+    /// HTTP chunk framing: hex length, CRLF, the bytes, CRLF.
     func send(_ data: Data, verbose: Bool) -> Bool {
         guard isActive else { return false }
         guard pendingBytes < maxPendingBytes else {
@@ -46,8 +50,13 @@ final class StreamClient {
             return true  // still alive, just slow
         }
 
+        var framed = Data(String(data.count, radix: 16).utf8)
+        framed.append(contentsOf: [0x0D, 0x0A])  // CRLF
+        framed.append(data)
+        framed.append(contentsOf: [0x0D, 0x0A])  // CRLF
+
         pendingBytes += data.count
-        connection.send(content: data, completion: .contentProcessed { [weak self] error in
+        connection.send(content: framed, completion: .contentProcessed { [weak self] error in
             guard let self = self else { return }
             self.pendingBytes -= data.count
             if let error = error {
