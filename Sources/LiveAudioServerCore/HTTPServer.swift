@@ -453,7 +453,14 @@ func statusPage(config: ServerConfig,
             }
             const resp = await fetch('/api/recorder/' + fmt + '/' + action, opts);
             if (!resp.ok) {
-              alert(action + ' failed: HTTP ' + resp.status);
+              // Prefer a JSON {error: "..."} body when present (e.g. from a
+              // host app intercepting this call) over the generic HTTP status.
+              let detail = 'HTTP ' + resp.status;
+              try {
+                const errBody = await resp.clone().json();
+                if (errBody && typeof errBody.error === 'string') detail = errBody.error;
+              } catch (e) {}
+              alert(action + ' failed: ' + detail);
               return;
             }
             const env = await resp.json();
