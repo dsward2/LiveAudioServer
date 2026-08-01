@@ -82,6 +82,9 @@ public final class LiveAudioServer: @unchecked Sendable {
     private var pcmReader: PCMReader?
     private var readerThread: Thread?
     private var statsTimer: DispatchSourceTimer?
+    /// Runtime-mutable filler mode, toggleable via `/api/filler-mode` without
+    /// restarting the process. Seeded from `config.fillerMode` on each start.
+    private var fillerModeState: FillerModeState?
 
     public init(config: ServerConfig) {
         self.config = config
@@ -208,6 +211,9 @@ public final class LiveAudioServer: @unchecked Sendable {
         let nowPlayingStore = NowPlayingStore()
         self.nowPlayingStore = nowPlayingStore
 
+        let fillerModeState = FillerModeState(config.fillerMode)
+        self.fillerModeState = fillerModeState
+
         let httpServer = HTTPServer(config: config,
                                     mp3Broadcaster: mp3Broadcaster,
                                     m4aBroadcaster: m4aBroadcaster,
@@ -215,6 +221,7 @@ public final class LiveAudioServer: @unchecked Sendable {
                                     nowPlayingStore: nowPlayingStore,
                                     mp3Recorder: mp3Recorder,
                                     aacRecorder: aacRecorder,
+                                    fillerModeState: fillerModeState,
                                     tlsIdentity: tlsIdentity)
         do {
             try httpServer.start()
@@ -232,7 +239,7 @@ public final class LiveAudioServer: @unchecked Sendable {
         }
         self.bonjourPublisher = bonjourPublisher
 
-        let pcmReader = PCMReader(config: config, broadcaster: pcmBroadcaster)
+        let pcmReader = PCMReader(config: config, broadcaster: pcmBroadcaster, fillerModeState: fillerModeState)
         self.pcmReader = pcmReader
 
         // SIGPIPE: prevent the process from dying when a client disconnects
@@ -323,5 +330,6 @@ public final class LiveAudioServer: @unchecked Sendable {
         bonjourPublisher = nil
         pcmReader        = nil
         readerThread     = nil
+        fillerModeState  = nil
     }
 }

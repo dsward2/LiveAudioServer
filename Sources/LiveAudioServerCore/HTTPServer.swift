@@ -491,6 +491,7 @@ final class HTTPConnection {
     private let nowPlayingStore: NowPlayingStore
     private let mp3Recorder: FileRecorder?
     private let aacRecorder: FileRecorder?
+    private let fillerModeState: FillerModeState
     private let onClose: (() -> Void)?
     private var receiveBuffer = Data()
     private var clientID: UUID?
@@ -505,6 +506,7 @@ final class HTTPConnection {
          nowPlayingStore: NowPlayingStore,
          mp3Recorder: FileRecorder?,
          aacRecorder: FileRecorder?,
+         fillerModeState: FillerModeState,
          onClose: (() -> Void)? = nil) {
         self.connection      = connection
         self.config          = config
@@ -515,6 +517,7 @@ final class HTTPConnection {
         self.nowPlayingStore = nowPlayingStore
         self.mp3Recorder     = mp3Recorder
         self.aacRecorder     = aacRecorder
+        self.fillerModeState = fillerModeState
         self.onClose         = onClose
     }
 
@@ -623,6 +626,9 @@ final class HTTPConnection {
         case ("POST", "/api/now-playing"):
             serveNowPlayingPost(body: body)
             return
+        case ("POST", "/api/filler-mode"):
+            serveFillerModePost(body: body)
+            return
         default:
             break
         }
@@ -653,6 +659,8 @@ final class HTTPConnection {
             serveNowPlayingGet(headOnly: method == "HEAD")
         case "/api/recorder":
             serveRecorderStatus(headOnly: method == "HEAD")
+        case "/api/filler-mode":
+            serveFillerModeStatus(headOnly: method == "HEAD")
         default:
             if config.enableHLS,
                let segmenter = hlsSegmenter,
@@ -908,6 +916,29 @@ final class HTTPConnection {
         sendJSONResponse(recorderStatusEnvelope())
     }
 
+    // MARK: - Filler Mode API
+
+    private struct FillerModeBody: Codable { let mode: String }
+    private struct FillerModeStatus: Codable { let mode: String }
+
+    private func serveFillerModeStatus(headOnly: Bool) {
+        sendJSONResponse(FillerModeStatus(mode: fillerModeState.mode.rawValue), headOnly: headOnly)
+    }
+
+    /// Switches the live filler mode (silence ⟷ tone) without restarting the
+    /// process — see `FillerModeState`. Lets a host app (e.g. a "start a test
+    /// recording" button) get an audible confirmation tone recorded even when
+    /// no real PCM is flowing, then switch back to silence afterward.
+    private func serveFillerModePost(body: Data) {
+        guard let req = try? JSONDecoder().decode(FillerModeBody.self, from: body),
+              let newMode = FillerMode(cliArgument: req.mode) else {
+            sendStatus(400, "Bad Request")
+            return
+        }
+        fillerModeState.mode = newMode
+        sendJSONResponse(FillerModeStatus(mode: newMode.rawValue))
+    }
+
     private func serveHLSPlaylist(headOnly: Bool) {
         guard let segmenter = hlsSegmenter else {
             connection.send(content: notFoundResponse(), completion: .contentProcessed { [weak self] _ in
@@ -962,6 +993,7 @@ final class HTTPServer {
     private let nowPlayingStore: NowPlayingStore
     private let mp3Recorder: FileRecorder?
     private let aacRecorder: FileRecorder?
+    private let fillerModeState: FillerModeState
     private let tlsIdentity: sec_identity_t?
     private var startedAt = Date()
     private var httpListener: NWListener?
@@ -976,6 +1008,7 @@ final class HTTPServer {
          nowPlayingStore: NowPlayingStore,
          mp3Recorder: FileRecorder?,
          aacRecorder: FileRecorder?,
+         fillerModeState: FillerModeState,
          tlsIdentity: sec_identity_t? = nil) {
         self.config          = config
         self.mp3Broadcaster  = mp3Broadcaster
@@ -984,6 +1017,7 @@ final class HTTPServer {
         self.nowPlayingStore = nowPlayingStore
         self.mp3Recorder     = mp3Recorder
         self.aacRecorder     = aacRecorder
+        self.fillerModeState = fillerModeState
         self.tlsIdentity     = tlsIdentity
     }
 
@@ -1099,6 +1133,7 @@ final class HTTPServer {
                                          nowPlayingStore: self.nowPlayingStore,
                                          mp3Recorder: self.mp3Recorder,
                                          aacRecorder: self.aacRecorder,
+                                         fillerModeState: self.fillerModeState,
                                          onClose: { [weak self] in
                                              self?.connectionLock.lock()
                                              self?.activeConnections.removeValue(forKey: id)

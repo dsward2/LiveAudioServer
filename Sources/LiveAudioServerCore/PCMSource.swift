@@ -151,6 +151,27 @@ struct FillerGenerator {
     }
 }
 
+// MARK: - Filler Mode State
+
+/// Thread-safe box around the active `FillerMode`, mutable at runtime via the
+/// `/api/filler-mode` HTTP endpoint (see `HTTPServer`). The PCM reader polls
+/// this each time it needs to (re)build its `FillerGenerator`, so a toggle
+/// takes effect on the next chunk without restarting the server — letting a
+/// host app switch a live process between silence and an audible test tone.
+final class FillerModeState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _mode: FillerMode
+
+    init(_ mode: FillerMode) {
+        self._mode = mode
+    }
+
+    var mode: FillerMode {
+        get { lock.lock(); defer { lock.unlock() }; return _mode }
+        set { lock.lock(); _mode = newValue; lock.unlock() }
+    }
+}
+
 // MARK: - PCM Reader
 
 /// Continuously reads raw 16-bit little-endian interleaved PCM from stdin, UDP,
@@ -158,6 +179,7 @@ struct FillerGenerator {
 final class PCMReader: @unchecked Sendable {
     private let config: ServerConfig
     private let broadcaster: PCMBroadcaster
+    private let fillerModeState: FillerModeState
     private var isRunning = false
     /// Set by `stop()` to break out of every loop unconditionally. Distinct
     /// from `isRunning` so we can tell "natural EOF" (isRunning flipped by
@@ -170,9 +192,20 @@ final class PCMReader: @unchecked Sendable {
     /// stream. Reset to zero whenever any non-zero sample is encountered.
     private var consecutiveZeroSamples: Int = 0
 
-    init(config: ServerConfig, broadcaster: PCMBroadcaster) {
+    init(config: ServerConfig, broadcaster: PCMBroadcaster, fillerModeState: FillerModeState) {
         self.config = config
         self.broadcaster = broadcaster
+        self.fillerModeState = fillerModeState
+    }
+
+    /// Rebuilds `generator` in place if the live filler mode has changed since
+    /// it was created, so a runtime `/api/filler-mode` toggle takes effect on
+    /// the very next chunk. Losing phase continuity across a mode switch is a
+    /// one-chunk click at worst — acceptable for a state that changes rarely.
+    private func refreshFillerGeneratorIfNeeded(_ generator: inout FillerGenerator) {
+        guard generator.mode != fillerModeState.mode else { return }
+        generator = FillerGenerator(mode: fillerModeState.mode, channels: config.channels,
+                                     sampleRate: config.sampleRate, toneHz: config.fillerToneHz)
     }
 
     /// Blocks the calling thread — run on a dedicated background thread.
@@ -268,7 +301,7 @@ final class PCMReader: @unchecked Sendable {
     private func runSilenceFill() {
         let chunkBytes = config.stdinChunkBytes
         var fillerBuf  = [UInt8](repeating: 0, count: chunkBytes)
-        var generator  = FillerGenerator(mode: config.fillerMode,
+        var generator  = FillerGenerator(mode: fillerModeState.mode,
                                          channels: config.channels,
                                          sampleRate: config.sampleRate,
                                          toneHz: config.fillerToneHz)
@@ -285,6 +318,7 @@ final class PCMReader: @unchecked Sendable {
         }
 
         while !shutdownRequested {
+            refreshFillerGeneratorIfNeeded(&generator)
             generator.fillChunk(&fillerBuf)
             broadcastPCMBytes(fillerBuf)
             usleep(chunkPeriodUSec)
@@ -373,7 +407,7 @@ final class PCMReader: @unchecked Sendable {
         var readBuf = [UInt8](repeating: 0, count: max(chunkBytes, 65536))
         var pending = [UInt8]()
 
-        var fillerGen = FillerGenerator(mode: config.fillerMode,
+        var fillerGen = FillerGenerator(mode: fillerModeState.mode,
                                         channels: config.channels,
                                         sampleRate: config.sampleRate,
                                         toneHz: config.fillerToneHz)
@@ -396,9 +430,10 @@ final class PCMReader: @unchecked Sendable {
                     consecutiveTimeouts += 1
                     if consecutiveTimeouts >= timeoutsBeforeFiller {
                         if !fillerActive {
-                            log("UDP input idle — emitting \(config.fillerMode) filler until traffic resumes")
+                            log("UDP input idle — emitting \(fillerModeState.mode) filler until traffic resumes")
                             fillerActive = true
                         }
+                        refreshFillerGeneratorIfNeeded(&fillerGen)
                         fillerGen.fillChunk(&fillerBuf)
                         broadcastPCMBytes(fillerBuf)
                     }
@@ -452,7 +487,7 @@ final class PCMReader: @unchecked Sendable {
         var readBuf    = [UInt8](repeating: 0, count: max(chunkBytes, 8192))
         var pending    = [UInt8]()
 
-        var fillerGen = FillerGenerator(mode: config.fillerMode,
+        var fillerGen = FillerGenerator(mode: fillerModeState.mode,
                                         channels: config.channels,
                                         sampleRate: config.sampleRate,
                                         toneHz: config.fillerToneHz)
@@ -478,9 +513,10 @@ final class PCMReader: @unchecked Sendable {
                     consecutiveTimeouts += 1
                     if consecutiveTimeouts >= timeoutsBeforeFiller {
                         if !fillerActive {
-                            log("TCP input idle — emitting \(config.fillerMode) filler until traffic resumes")
+                            log("TCP input idle — emitting \(fillerModeState.mode) filler until traffic resumes")
                             fillerActive = true
                         }
+                        refreshFillerGeneratorIfNeeded(&fillerGen)
                         fillerGen.fillChunk(&fillerBuf)
                         broadcastPCMBytes(fillerBuf)
                     }
