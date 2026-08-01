@@ -11,6 +11,7 @@
 import Foundation
 import AudioToolbox
 import Network
+import AudioEncoders
 
 /// Errors thrown from `LiveAudioServer.start()`. Replace the CLI's previous
 /// `exit(1)` / `fputs(...stderr)` paths so host apps can react in Swift.
@@ -184,14 +185,30 @@ public final class LiveAudioServer: @unchecked Sendable {
             : nil
         self.hlsSegmenter = hlsSegmenter
 
+        // AudioEncoders (PipelineHelpers) knows nothing about ChunkBroadcaster
+        // or HLSSegmenter — it just hands encoded chunks to a closure — so
+        // this server wires those in at the call site instead.
+        let audioEncoderConfig = AudioEncoderConfig(sampleRate: config.sampleRate,
+                                                     channels: config.channels,
+                                                     mp3Bitrate: config.mp3Bitrate,
+                                                     aacBitrate: config.aacBitrate,
+                                                     chunkFrames: config.stdinChunkFrames,
+                                                     verbose: config.verbose)
         do {
             if config.enableMP3 {
-                let enc = MP3Encoder(config: config, output: mp3Broadcaster)
+                let enc = MP3Encoder(config: audioEncoderConfig) { data in
+                    mp3Broadcaster.broadcast(data)
+                }
                 try enc.start()
                 self.mp3Encoder = enc
             }
             if config.enableAAC || config.enableHLS {
-                let enc = AACEncoder(config: config, output: m4aBroadcaster, hlsSegmenter: hlsSegmenter)
+                // Order matches the encoder's own previous internal behavior:
+                // segment the frame before broadcasting it.
+                let enc = AACEncoder(config: audioEncoderConfig) { data in
+                    hlsSegmenter?.appendFrame(data)
+                    m4aBroadcaster.broadcast(data)
+                }
                 try enc.start()
                 self.aacEncoder = enc
             }
@@ -251,6 +268,7 @@ public final class LiveAudioServer: @unchecked Sendable {
             guard let self else { return }
             self.mp3Encoder?.stop()
             self.aacEncoder?.stop()
+            self.hlsSegmenter?.finalizePendingSegment()
             if self.config.keepAliveOnInputEnd {
                 log("Input ended. Encoders stopped; HTTP server remains available because --keep-alive is enabled.")
                 return
@@ -304,6 +322,7 @@ public final class LiveAudioServer: @unchecked Sendable {
         pcmReader?.stop()
         mp3Encoder?.stop()
         aacEncoder?.stop()
+        hlsSegmenter?.finalizePendingSegment()
         // 3. Stop any active recordings so their trailing bytes flush.
         mp3Recorder?.stop()
         aacRecorder?.stop()

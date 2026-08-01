@@ -1,4 +1,0 @@
-module CLame {
-    header "lame.h"
-    export *
-}

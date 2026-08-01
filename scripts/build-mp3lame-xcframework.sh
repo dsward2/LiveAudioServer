@@ -5,12 +5,16 @@
 # Build a universal (arm64 + x86_64) static Mp3Lame.xcframework from the LAME
 # 3.100 source release and stage it at Frameworks/Mp3Lame.xcframework.
 #
-# This produces the artifact that Package.swift consumes via a binaryTarget,
-# so `swift build` works on a fresh clone without any external package
-# manager (no Homebrew, no MacPorts).
+# This package no longer consumes the artifact itself (LiveAudioServerCore
+# now gets MP3/AAC encoding via PipelineHelpers' AudioEncoders library, to
+# avoid two copies of libmp3lame colliding when an app depends on both
+# packages — see PipelineHelpers/Package.swift). This script is kept as the
+# canonical way to (re)build the xcframework: run it, then copy the output
+# into PipelineHelpers/Frameworks/Mp3Lame.xcframework, renaming the module
+# ("CLame" → "PHCLame") and the binary/header (libmp3lame.a/lame.h →
+# libphmp3lame.a/phlame.h) per the collision-avoidance note there.
 #
-# Re-run this script only when bumping the LAME version. The generated
-# Frameworks/Mp3Lame.xcframework is committed to the repo.
+# Re-run this script only when bumping the LAME version.
 #
 # Requirements (already present on any macOS 13+ machine with Xcode):
 #   - curl, tar, make, lipo

@@ -96,7 +96,7 @@ scripts, so the first time you run it from a downloaded zip you'll see:
 
 This is a one-time prompt. To get past it:
 
-**macOS 13–14** — In Finder, **right-click** (or Control-click)
+**macOS 14** — In Finder, **right-click** (or Control-click)
 `Start LiveAudioServer.command` and choose **Open**. A second dialog
 appears with an actual **Open** button — click it. The script runs and
 macOS remembers your choice for future launches.
@@ -373,13 +373,13 @@ and the helper will dyld-resolve `LiveAudioServerCore` out of
 
 ### Requirements
 
-- macOS 13 (Ventura) or later
+- macOS 14 (Sonoma) or later
 - Xcode 15.4+ / Swift 5.10+ (uses the [Swift Testing](https://github.com/apple/swift-testing) framework for unit tests)
 
-No external package manager required. `libmp3lame` ships pre-built as a
-universal (arm64 + x86_64) static XCFramework at
-[`Frameworks/Mp3Lame.xcframework`](Frameworks/Mp3Lame.xcframework) and is
-consumed by SwiftPM as a binary target.
+No external package manager (Homebrew/MacPorts) required — MP3/AAC encoding
+comes from the [PipelineHelpers](https://github.com/dsward2/PipelineHelpers)
+package's `AudioEncoders` library, which SwiftPM fetches automatically and
+which vendors `libmp3lame` as a prebuilt XCFramework itself.
 
 ```bash
 cd LiveAudioServer
