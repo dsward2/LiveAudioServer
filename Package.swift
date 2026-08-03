@@ -1,5 +1,13 @@
 // swift-tools-version: 5.10
 import PackageDescription
+import Foundation
+
+// Use the local PipelineHelpers sibling when building from the umbrella monorepo;
+// fall back to GitHub when used standalone.
+let pipelineHelpersDep: Package.Dependency = FileManager.default.fileExists(
+    atPath: "../PipelineHelpers/Package.swift"
+) ? .package(path: "../PipelineHelpers")
+  : .package(url: "https://github.com/dsward2/PipelineHelpers", branch: "main")
 
 let package = Package(
     name: "LiveAudioServer",
@@ -22,7 +30,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-testing.git", from: "0.10.0"),
         // MP3/AAC encoding (AudioEncoders) — see scripts/build-mp3lame-xcframework.sh
         // for why this package no longer vendors its own libmp3lame copy.
-        .package(url: "https://github.com/dsward2/PipelineHelpers", branch: "main")
+        pipelineHelpersDep,
     ],
     targets: [
         // Server + encoders + streaming + config. Reusable from a host app.
