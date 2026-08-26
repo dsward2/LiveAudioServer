@@ -4,11 +4,7 @@ import PackageDescription
 let package = Package(
     name: "LiveAudioServer",
     platforms: [
-        // Bumped from .v13: PipelineHelpers (AudioEncoders' package) requires
-        // macOS 14 package-wide, for PipelineRunner's use of @Observable —
-        // SwiftPM's platforms list is package-level, so any product from that
-        // package carries the same floor regardless of what it itself uses.
-        .macOS(.v14)
+        .macOS(.v13)
     ],
     products: [
         // Public library product so external SwiftPM packages (e.g. a SwiftUI
@@ -20,13 +16,18 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-testing.git", from: "0.10.0"),
-        .package(path: "../PipelineHelpers"),
     ],
     targets: [
+        // Vendored libmp3lame as a universal (arm64 + x86_64) static
+        // XCFramework. Regenerate by running scripts/build-mp3lame-xcframework.sh.
+        .binaryTarget(
+            name: "CLame",
+            path: "Frameworks/Mp3Lame.xcframework"
+        ),
         // Server + encoders + streaming + config. Reusable from a host app.
         .target(
             name: "LiveAudioServerCore",
-            dependencies: [.product(name: "AudioEncoders", package: "PipelineHelpers")],
+            dependencies: ["CLame"],
             path: "Sources/LiveAudioServerCore"
         ),
         // Thin CLI shim: argument parsing, signal handling, process exit.

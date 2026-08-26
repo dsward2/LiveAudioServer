@@ -2,17 +2,22 @@
 #
 # LiveAudioServer — https://github.com/dsward2/LiveAudioServer
 #
-# Build a universal (arm64 + x86_64) static Mp3Lame.xcframework from the LAME
-# 3.100 source release and stage it at Frameworks/Mp3Lame.xcframework.
+# Build a universal (arm64 + x86_64) CLame.framework-based XCFramework from
+# the LAME 3.100 source release and stage it at Frameworks/Mp3Lame.xcframework.
 #
-# This package no longer consumes the artifact itself (LiveAudioServerCore
-# now gets MP3/AAC encoding via PipelineHelpers' AudioEncoders library, to
-# avoid two copies of libmp3lame colliding when an app depends on both
-# packages — see PipelineHelpers/Package.swift). This script is kept as the
-# canonical way to (re)build the xcframework: run it, then copy the output
-# into PipelineHelpers/Frameworks/Mp3Lame.xcframework, renaming the module
-# ("CLame" → "PHCLame") and the binary/header (libmp3lame.a/lame.h →
-# libphmp3lame.a/phlame.h) per the collision-avoidance note there.
+# LiveAudioServerCore vendors its own copy of lame (as the CLame binaryTarget)
+# rather than depending on PipelineHelpers' PHCLame, to keep LiveAudioServer
+# fully self-contained. Both packages can coexist in the same app (AntennaHead
+# depends on both) because CLame is packaged as a macOS versioned framework
+# bundle — staged under CLame.framework/ — while PHCLame remains a static
+# library XCFramework staging its headers flat to include/. A flat static lib
+# for CLame would collide at include/module.modulemap with PHCLame's own map.
+#
+# This script produces the static library slices and then assembles the
+# versioned framework bundle + XCFramework. Run it when bumping LAME, then
+# re-copy the libphmp3lame.a and phlame.h into PipelineHelpers' xcframework
+# (PipelineHelpers keeps its own static-library copy, renamed to avoid the
+# flat-header collision — see PipelineHelpers/Package.swift for details).
 #
 # Re-run this script only when bumping the LAME version.
 #
@@ -127,28 +132,64 @@ lipo -create \
     -output "${UNI_DIR}/libmp3lame.a"
 lipo -info "${UNI_DIR}/libmp3lame.a"
 
-echo "[6/7] Assembling Headers and module map"
-HDR="${BUILD_ROOT}/Headers"
-rm -rf "${HDR}"
-mkdir -p "${HDR}"
-cp "${BUILD_ROOT}/stage-arm64/include/lame/lame.h" "${HDR}/lame.h"
-cat > "${HDR}/module.modulemap" <<'MODMAP'
-module CLame {
-    header "lame.h"
+echo "[6/7] Assembling versioned CLame.framework bundle"
+# Package as a macOS versioned framework (not a flat static-library XCFramework)
+# so that Xcode stages it as CLame.framework/ rather than merging its headers
+# flat into include/. Without this, two packages in the same graph that both
+# vendor a static lame XCFramework would collide at include/module.modulemap.
+FW_BUILD="${BUILD_ROOT}/CLame.framework"
+FW_A="${FW_BUILD}/Versions/A"
+mkdir -p "${FW_A}/Headers" "${FW_A}/Modules" "${FW_A}/Resources"
+
+# Binary: static archive renamed to match the framework name
+cp "${UNI_DIR}/libmp3lame.a" "${FW_A}/CLame"
+cp "${BUILD_ROOT}/stage-arm64/include/lame/lame.h" "${FW_A}/Headers/lame.h"
+
+cat > "${FW_A}/Modules/module.modulemap" <<'MODMAP'
+framework module CLame {
+    umbrella header "lame.h"
     export *
 }
 MODMAP
 
+cat > "${FW_A}/Resources/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key><string>CLame</string>
+    <key>CFBundleIdentifier</key><string>com.dsward.CLame</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleName</key><string>CLame</string>
+    <key>CFBundlePackageType</key><string>FMWK</string>
+    <key>CFBundleShortVersionString</key><string>${LAME_VERSION}.0</string>
+    <key>CFBundleVersion</key><string>${LAME_VERSION}.0</string>
+    <key>MinimumOSVersion</key><string>${MACOSX_DEPLOYMENT_TARGET}</string>
+</dict>
+</plist>
+PLIST
+
+# macOS versioned framework requires Current symlink and top-level symlinks
+(cd "${FW_BUILD}/Versions" && ln -s A Current)
+(cd "${FW_BUILD}" && ln -s Versions/Current/CLame CLame)
+(cd "${FW_BUILD}" && ln -s Versions/Current/Headers Headers)
+(cd "${FW_BUILD}" && ln -s Versions/Current/Modules Modules)
+(cd "${FW_BUILD}" && ln -s Versions/Current/Resources Resources)
+
 echo "[7/7] Creating Mp3Lame.xcframework"
+# Use -framework (not -library) so the XCFramework references the bundle
 xcodebuild -create-xcframework \
-    -library  "${UNI_DIR}/libmp3lame.a" \
-    -headers  "${HDR}" \
-    -output   "${OUT_XCF}" \
+    -framework "${FW_BUILD}" \
+    -output    "${OUT_XCF}" \
     >/dev/null
 
 echo
 echo "Done."
 echo "  Output:  ${OUT_XCF}"
 du -sh "${OUT_XCF}"
+echo
+echo "To update PipelineHelpers with a new LAME build:"
+echo "  Copy ${UNI_DIR}/libmp3lame.a → PipelineHelpers/Frameworks/Mp3Lame.xcframework/.../libphmp3lame.a"
+echo "  Copy ${BUILD_ROOT}/stage-arm64/include/lame/lame.h → PipelineHelpers/.../Headers/phlame.h"
 echo
 echo "You can now build the project with: swift build -c release"

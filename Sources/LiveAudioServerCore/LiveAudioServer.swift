@@ -11,7 +11,6 @@
 import Foundation
 import AudioToolbox
 import Network
-import AudioEncoders
 
 /// Errors thrown from `LiveAudioServer.start()`. Replace the CLI's previous
 /// `exit(1)` / `fputs(...stderr)` paths so host apps can react in Swift.
@@ -185,9 +184,6 @@ public final class LiveAudioServer: @unchecked Sendable {
             : nil
         self.hlsSegmenter = hlsSegmenter
 
-        // AudioEncoders (PipelineHelpers) knows nothing about ChunkBroadcaster
-        // or HLSSegmenter — it just hands encoded chunks to a closure — so
-        // this server wires those in at the call site instead.
         let audioEncoderConfig = AudioEncoderConfig(sampleRate: config.sampleRate,
                                                      channels: config.channels,
                                                      mp3Bitrate: config.mp3Bitrate,

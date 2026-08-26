@@ -1,0 +1,4 @@
+framework module CLame {
+    umbrella header "lame.h"
+    export *
+}
