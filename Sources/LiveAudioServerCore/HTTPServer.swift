@@ -143,7 +143,7 @@ func statusPage(config: ServerConfig,
         "<div class=\"row\"><span class=\"label\">\(label)</span><span class=\"badge\" id=\"\(id)\">\(count)</span></div>"
     }
     func urlRow(_ label: String, _ url: String) -> String {
-        "<div class=\"row\"><span class=\"label\">\(label)</span><code style=\"color:#7c83e8;font-size:0.82rem\">\(url)</code></div>"
+        "<div class=\"row\"><span class=\"label\">\(label)</span><code class=\"url-code\">\(url)</code></div>"
     }
 
     var streamRows = ""
@@ -266,33 +266,66 @@ func statusPage(config: ServerConfig,
       <title>LiveAudioServer</title>
       <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
+        /* Palette kept in step with AntennaHead's Light/Dark tokens (neutral
+           grays + Apple systemBlue) so this page reads the same as the app's
+           other views when embedded in AntennaHead's WKWebView, and follows
+           the OS / forced appearance the same way. */
+        :root {
+          color-scheme: light dark;
+          --bg:            #f2f2f7;
+          --card:          #ffffff;
+          --border:        rgba(0,0,0,0.10);
+          --text:          #1c1c1e;
+          --muted:         #6e6e73;
+          --accent:        #0a84ff;
+          --accent-hover:  #0071e3;
+          --btn-disabled:  #d1d1d6;
+        }
+        @media (prefers-color-scheme: dark) {
+          :root {
+            --bg:           #1c1c1e;
+            --card:         #2c2c2e;
+            --border:       rgba(255,255,255,0.10);
+            --text:         #f2f2f7;
+            --muted:        #9e9ea3;
+            --accent:       #0a84ff;
+            --accent-hover: #409cff;
+            --btn-disabled: #3a3a3c;
+          }
+        }
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-               background: #0f1117; color: #e2e8f0; min-height: 100vh; padding: 40px 24px; }
-        .card { background: #1e2130; border-radius: 12px; padding: 28px;
-                max-width: 640px; margin: 0 auto 24px; border: 1px solid #2d3250; }
-        h1 { font-size: 1.5rem; color: #7c83e8; margin-bottom: 4px; }
-        .sub { color: #718096; font-size: 0.85rem; margin-bottom: 24px; }
+               background: var(--bg); color: var(--text); min-height: 100vh; padding: 40px 24px; }
+        .card { background: var(--card); border-radius: 12px; padding: 28px;
+                max-width: 640px; margin: 0 auto 24px; border: 1px solid var(--border); }
+        /* Titles, labels, values and stream URLs all use the ordinary text
+           colour, like the native Status / Configuration / Security tabs.
+           --accent (systemBlue) is reserved for filled controls only:
+           buttons, the listener-count badge, the focus ring, <audio>. */
+        h1 { font-size: 1.5rem; color: var(--text); margin-bottom: 4px; }
+        .sub { color: var(--muted); font-size: 0.85rem; margin-bottom: 24px; }
         .row { display: flex; justify-content: space-between; align-items: center;
-               padding: 12px 0; border-bottom: 1px solid #2d3250; }
+               padding: 12px 0; border-bottom: 1px solid var(--border); }
         .row:last-child { border-bottom: none; }
-        .label { color: #a0aec0; font-size: 0.9rem; }
-        .value { font-weight: 600; color: #e2e8f0; }
-        .badge { display: inline-block; background: #7c83e8; color: #fff;
+        .label { color: var(--text); font-size: 0.9rem; }
+        .value { font-weight: 600; color: var(--text); }
+        .badge { display: inline-block; background: var(--accent); color: #fff;
                  border-radius: 20px; padding: 3px 12px; font-size: 0.8rem; }
-        .stream-link { color: #7c83e8; text-decoration: none; font-size: 0.9rem; }
+        .stream-link { color: var(--text); text-decoration: none; font-size: 0.9rem; }
+        .stream-link:visited { color: var(--text); }
         .stream-link:hover { text-decoration: underline; }
-        audio { width: 100%; margin-top: 12px; accent-color: #7c83e8; }
-        .player-label { color: #a0aec0; font-size: 0.8rem; margin-top: 16px; margin-bottom: 4px; }
-        .btn { padding: 8px 16px; background: #7c83e8; color: #fff; border: none;
+        .url-code { color: var(--text); font-size: 0.82rem; }
+        audio { width: 100%; margin-top: 12px; accent-color: var(--accent); }
+        .player-label { color: var(--muted); font-size: 0.8rem; margin-top: 16px; margin-bottom: 4px; }
+        .btn { padding: 8px 16px; background: var(--accent); color: #fff; border: none;
                border-radius: 6px; cursor: pointer; font-family: inherit;
                font-size: 0.85rem; transition: background 0.1s ease; }
-        .btn:disabled { background: #3a3f5e; cursor: not-allowed; opacity: 0.6; }
-        .btn:hover:not(:disabled) { background: #9197f0; }
+        .btn:disabled { background: var(--btn-disabled); cursor: not-allowed; opacity: 0.6; }
+        .btn:hover:not(:disabled) { background: var(--accent-hover); }
         .text-input { width: 100%; padding: 8px; margin-top: 4px;
-                      background: #0f1117; color: #e2e8f0; border: 1px solid #2d3250;
+                      background: var(--bg); color: var(--text); border: 1px solid var(--border);
                       border-radius: 6px; font-family: inherit; font-size: 0.9rem;
                       box-sizing: border-box; }
-        .text-input:focus { outline: none; border-color: #7c83e8; }
+        .text-input:focus { outline: none; border-color: var(--accent); }
         .path-row { display: flex; gap: 8px; margin-top: 4px; align-items: stretch; }
         .path-row .text-input { margin-top: 0; flex: 1; }
         .path-row .btn { white-space: nowrap; }
