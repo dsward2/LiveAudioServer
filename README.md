@@ -376,10 +376,9 @@ and the helper will dyld-resolve `LiveAudioServerCore` out of
 - macOS 14 (Sonoma) or later
 - Xcode 15.4+ / Swift 5.10+ (uses the [Swift Testing](https://github.com/apple/swift-testing) framework for unit tests)
 
-No external package manager (Homebrew/MacPorts) required — MP3/AAC encoding
-comes from the [PipelineHelpers](https://github.com/dsward2/PipelineHelpers)
-package's `AudioEncoders` library, which SwiftPM fetches automatically and
-which vendors `libmp3lame` as a prebuilt XCFramework itself.
+No external package manager (Homebrew/MacPorts) required — `libmp3lame` is
+vendored as a prebuilt static XCFramework (`Frameworks/Mp3Lame.xcframework`)
+and AAC uses the system AudioToolbox framework.
 
 ```bash
 cd LiveAudioServer
