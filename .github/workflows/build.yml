@@ -22,12 +22,6 @@ jobs:
       - name: Show Swift version
         run: swift --version
 
-      - name: Install libmp3lame
-        run: brew install lame pkg-config
-
-      - name: Verify pkg-config sees mp3lame
-        run: pkg-config --libs mp3lame
-
       - name: Build
         run: swift build -c ${{ matrix.config }}
 
