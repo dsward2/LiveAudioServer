@@ -71,6 +71,14 @@ final class AACEncoder {
 
     private var outputBuf: [UInt8]
 
+    /// Serializes encode / flush / stop. The PCM reader thread encodes (and
+    /// flushes on EOF) while `LiveAudioServer.stop()` tears down from a Swift
+    /// task; without this, AudioConverterReset/Dispose ran concurrently on the
+    /// same converter and crashed in aacClose ("pointer being freed was not
+    /// allocated").
+    private let lock = NSLock()
+    private var isStopped = false
+
     init(config: AudioEncoderConfig, onEncoded: @escaping (Data) -> Void) {
         self.config = config
         self.onEncoded = onEncoded
@@ -112,8 +120,13 @@ final class AACEncoder {
         encoderLog("AAC encoder ready: \(config.aacBitrate/1000)kbps, \(config.channels)ch, \(config.sampleRate)Hz", config: config)
     }
 
+    /// Idempotent. Disposes the converter exactly once; later `encode` calls
+    /// are no-ops. No reset first: AudioConverterReset only discards buffered
+    /// input (it emits nothing), and Dispose frees the codec anyway.
     func stop() {
-        flush()
+        lock.lock(); defer { lock.unlock() }
+        guard !isStopped else { return }
+        isStopped = true
         if let conv = converter {
             AudioConverterDispose(conv)
             converter = nil
@@ -123,6 +136,8 @@ final class AACEncoder {
     // MARK: - Encoding
 
     func encode(samples: UnsafeBufferPointer<Int16>) {
+        lock.lock(); defer { lock.unlock() }
+        guard !isStopped else { return }
         if samples.count == 0 {
             flush()
             return
@@ -133,6 +148,7 @@ final class AACEncoder {
 
     // MARK: - Internal
 
+    /// Caller must hold `lock`.
     private func drainQueue() {
         guard let converter = converter else { return }
         let samplesNeeded = framesPerPacket * config.channels
@@ -200,6 +216,7 @@ final class AACEncoder {
         }
     }
 
+    /// Caller must hold `lock`.
     private func flush() {
         if let conv = converter {
             AudioConverterReset(conv)

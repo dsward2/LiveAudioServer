@@ -9,6 +9,14 @@ final class MP3Encoder {
     private var lame: lame_t?
     private var mp3Buf: [UInt8]
 
+    /// Serializes encode / flush / stop. The PCM reader thread encodes (and
+    /// flushes on EOF) while `LiveAudioServer.stop()` tears down from a Swift
+    /// task; without this, lame_encode_flush / lame_close ran concurrently on
+    /// the same handle and aborted inside LAME.
+    private let lock = NSLock()
+    private var isStopped = false
+    private var isFlushed = false
+
     // LAME recommends output buffer = 1.25 * samples + 7200
     private var mp3BufSize: Int { Int(Double(config.chunkFrames) * 1.25) + 7200 }
 
@@ -38,7 +46,12 @@ final class MP3Encoder {
         encoderLog("MP3 encoder ready: \(config.mp3Bitrate)kbps, \(config.channels)ch, \(config.sampleRate)Hz", config: config)
     }
 
+    /// Idempotent. Flushes (if the EOF path hasn't already) and closes LAME
+    /// exactly once; later `encode` calls are no-ops.
     func stop() {
+        lock.lock(); defer { lock.unlock() }
+        guard !isStopped else { return }
+        isStopped = true
         flush()
         if lame != nil {
             lame_close(lame)
@@ -50,7 +63,8 @@ final class MP3Encoder {
 
     /// Called with each PCM chunk. count==0 signals EOF/flush.
     func encode(samples: UnsafeBufferPointer<Int16>) {
-        guard let lame = lame else { return }
+        lock.lock(); defer { lock.unlock() }
+        guard !isStopped, let lame = lame else { return }
 
         if samples.count == 0 {
             flush()
@@ -105,8 +119,10 @@ final class MP3Encoder {
 
     // MARK: - Private
 
+    /// Caller must hold `lock`. Runs at most once per encoder.
     private func flush() {
-        guard let lame = lame else { return }
+        guard !isFlushed, let lame = lame else { return }
+        isFlushed = true
         var flushBuf = [UInt8](repeating: 0, count: 7200)
         let n = flushBuf.withUnsafeMutableBytes { ptr in
             lame_encode_flush(lame,

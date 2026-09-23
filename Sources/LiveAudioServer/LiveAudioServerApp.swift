@@ -203,7 +203,18 @@ struct LiveAudioServerApp {
         // Graceful shutdown wired to SIGINT/SIGTERM. Ignoring the kernel
         // default first means the DispatchSourceSignal sees the signal
         // instead of the process being torn down.
+        // One-shot: the parent watchdog keeps firing every 0.5 s after the
+        // parent dies, and a second SIGTERM can land mid-teardown. A repeat
+        // call would see stop() return early and exit(0) while the first
+        // shutdown is still disposing encoders.
+        let shutdownLock = NSLock()
+        var shutdownStarted = false
         let runGracefulShutdown: (String) -> Void = { reason in
+            shutdownLock.lock()
+            let alreadyStarted = shutdownStarted
+            shutdownStarted = true
+            shutdownLock.unlock()
+            if alreadyStarted { return }
             log("\n\(reason) received — graceful shutdown")
             Task {
                 await server.stop()
