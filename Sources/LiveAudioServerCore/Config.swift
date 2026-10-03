@@ -68,6 +68,12 @@ public struct ServerConfig {
     /// `LiveAudioServerApp`.
     public var exitWithParent: Bool = false
     public var keepAliveOnInputEnd: Bool = false
+    /// Slim down the HTML status page for host apps that embed it: keeps the
+    /// stream links, listener counts and audio previews, and drops the
+    /// input/port/rate/version rows, the external-player URL card, the
+    /// recorder cards and the Now Playing card. The JSON/API endpoints are
+    /// unaffected. CLI: `--minimal-ui`.
+    public var minimalUI: Bool = false
     /// When the input stream is a FIFO/named pipe and `keepAliveOnInputEnd` is
     /// on, re-`open()` the same path on EOF so a new producer can attach.
     /// Plain pipes (e.g. shell `|`) cannot be reopened — this only takes

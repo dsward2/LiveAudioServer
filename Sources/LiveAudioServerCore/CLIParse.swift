@@ -226,6 +226,8 @@ public func parseCLI(_ args: [String]) -> CLIParseResult {
             config.httpAuthRealm = r
         case "--keep-alive":
             config.keepAliveOnInputEnd = true
+        case "--minimal-ui":
+            config.minimalUI = true
         case "--exit-with-parent":
             config.exitWithParent = true
         case "--no-fifo-reopen":

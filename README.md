@@ -572,6 +572,10 @@ Options:
   --config <path>           Read defaults from a JSON config file. Any CLI
                             flag passed alongside it overrides the file's
                             value. See "Configuration file" below.
+  --minimal-ui              Slim HTML status page: keep stream links, listener
+                            counts and previews; hide input/port/rate/version
+                            rows, external-player URLs, recorder cards and
+                            Now Playing. API endpoints are unchanged.
   --keep-alive              Keep HTTP outputs available after stdin reaches EOF.
                             If stdin is a FIFO (mkfifo), the reader also
                             re-opens it on EOF so a new producer can attach;
