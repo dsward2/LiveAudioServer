@@ -21,6 +21,26 @@ struct CLIParseTests {
         return nil
     }
 
+    @Test("--minimal-ui sets the flag and is off by default")
+    func minimalUI() {
+        #expect(runConfig([])?.minimalUI == false)
+        #expect(runConfig(["--minimal-ui"])?.minimalUI == true)
+    }
+
+    @Test("Minimal status page drops detail, URL, recorder and Now Playing cards")
+    func minimalStatusPage() {
+        var cfg = ServerConfig()
+        let full = String(decoding: statusPage(config: cfg, mp3Clients: 0, m4aClients: 0, startedAt: Date()), as: UTF8.self)
+        cfg.minimalUI = true
+        let slim = String(decoding: statusPage(config: cfg, mp3Clients: 0, m4aClients: 0, startedAt: Date()), as: UTF8.self)
+        for marker in ["Input Source", "Stream URLs for external players", "rec-mp3-card", "rec-aac-card", "now-playing-card\" style"] {
+            #expect(full.contains(marker), "full page should contain \(marker)")
+            #expect(!slim.contains(marker), "minimal page should not contain \(marker)")
+        }
+        #expect(slim.contains("mp3-listeners"))
+        #expect(slim.contains("<audio"))
+    }
+
     @Test("No arguments yields defaults")
     func emptyArgs() {
         let cfg = runConfig([])

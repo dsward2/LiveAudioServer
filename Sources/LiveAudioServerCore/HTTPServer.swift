@@ -220,8 +220,8 @@ func statusPage(config: ServerConfig,
     }
 
     var recorderCards = ""
-    if config.enableMP3 { recorderCards += recorderCard("mp3", label: "MP3") }
-    if config.enableAAC { recorderCards += recorderCard("aac", label: "AAC") }
+    if !config.minimalUI && config.enableMP3 { recorderCards += recorderCard("mp3", label: "MP3") }
+    if !config.minimalUI && config.enableAAC { recorderCards += recorderCard("aac", label: "AAC") }
 
     var urlRows = ""
     if config.enableMP3 {
@@ -256,6 +256,44 @@ func statusPage(config: ServerConfig,
     df.dateFormat = "yyyy-MM-dd HH:mm:ss"
     df.locale = Locale(identifier: "en_US_POSIX")
     let startedStr = df.string(from: startedAt)
+
+    let urlCard: String = config.minimalUI ? "" : """
+      <div class="card">
+        <p class="label" style="margin-bottom:8px">Stream URLs for external players</p>
+        \(urlRows)
+      </div>
+      """
+    let nowPlayingCard: String = config.minimalUI ? "" : """
+      <div class="card" id="now-playing-card" style="display:none">
+        <p class="label" style="margin-bottom:8px">Now Playing</p>
+        <div class="row"><span class="label">Title</span><span class="value" id="np-title">—</span></div>
+        <div class="row"><span class="label">Artist</span><span class="value" id="np-artist">—</span></div>
+        <div class="row"><span class="label">Station</span><span class="value" id="np-station">—</span></div>
+        <div class="row"><span class="label">Note</span><span class="value" id="np-note">—</span></div>
+        <div class="row"><span class="label">Updated</span><span class="value" id="np-updated">—</span></div>
+      </div>
+      """
+    let detailRows: String = config.minimalUI ? "" : """
+        <div class="row">
+          <span class="label">Input Source</span>
+          <span class="value">\(config.inputSource.displayName)</span>
+        </div>
+        <div class="row">
+          <span class="label">Port</span>
+          <span class="value">\(config.port)</span>
+        </div>
+        <div class="row">
+          <span class="label">Sample Rate</span>
+          <span class="value">\(config.sampleRate) Hz</span>
+        </div>
+        <div class="row">
+          <span class="label">Channels</span>
+          <span class="value">\(config.channels == 1 ? "Mono" : "Stereo")</span>
+        </div>
+        \(row("Version", "\(liveAudioServerVersion) (\(liveAudioServerGitSHA))"))
+        \(row("Started", "\(startedStr)  ·  up \(uptimeStr)"))
+        """
+
 
     let html = """
     <!DOCTYPE html>
@@ -336,24 +374,7 @@ func statusPage(config: ServerConfig,
         <h1>🎙 LiveAudioServer</h1>
         <p class="sub">Live audio streaming — listener counts update every 5s</p>
 
-        <div class="row">
-          <span class="label">Input Source</span>
-          <span class="value">\(config.inputSource.displayName)</span>
-        </div>
-        <div class="row">
-          <span class="label">Port</span>
-          <span class="value">\(config.port)</span>
-        </div>
-        <div class="row">
-          <span class="label">Sample Rate</span>
-          <span class="value">\(config.sampleRate) Hz</span>
-        </div>
-        <div class="row">
-          <span class="label">Channels</span>
-          <span class="value">\(config.channels == 1 ? "Mono" : "Stereo")</span>
-        </div>
-        \(row("Version", "\(liveAudioServerVersion) (\(liveAudioServerGitSHA))"))
-        \(row("Started", "\(startedStr)  ·  up \(uptimeStr)"))
+        \(detailRows)
         \(streamRows)
       </div>
 
@@ -361,21 +382,11 @@ func statusPage(config: ServerConfig,
         \(players)
       </div>
 
-      <div class="card">
-        <p class="label" style="margin-bottom:8px">Stream URLs for external players</p>
-        \(urlRows)
-      </div>
+      \(urlCard)
 
       \(recorderCards)
 
-      <div class="card" id="now-playing-card" style="display:none">
-        <p class="label" style="margin-bottom:8px">Now Playing</p>
-        <div class="row"><span class="label">Title</span><span class="value" id="np-title">—</span></div>
-        <div class="row"><span class="label">Artist</span><span class="value" id="np-artist">—</span></div>
-        <div class="row"><span class="label">Station</span><span class="value" id="np-station">—</span></div>
-        <div class="row"><span class="label">Note</span><span class="value" id="np-note">—</span></div>
-        <div class="row"><span class="label">Updated</span><span class="value" id="np-updated">—</span></div>
-      </div>
+      \(nowPlayingCard)
 
       <script>
         // Poll listener counts (and now-playing) in place so the <audio>
